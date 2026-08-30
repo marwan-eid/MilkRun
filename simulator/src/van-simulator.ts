@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import { type GpsEvent, type DeliveryEvent, type VanRoute, type VanStatus } from './models/index.js';
-import { calculateBearing } from './route-generator.js';
+import { calculateBearing, fetchOsrmRoute } from './route-generator.js';
 import { maybeDuplicate, EventReorderer, ConnectionDropper } from './chaos/index.js';
 import { KafkaEventProducer } from './kafka-producer.js';
 
@@ -322,5 +322,57 @@ export class VanSimulator {
 
     get currentStatus(): VanStatus {
         return this.status;
+    }
+
+    public getCurrentLocation(): import('./models/index.js').Waypoint | null {
+        if (this.waypointIndex >= 0 && this.waypointIndex < this.route.waypoints.length) {
+            return this.route.waypoints[this.waypointIndex];
+        }
+        return null;
+    }
+
+    /**
+     * Seamlessly splices a dynamic routing objective mid-flight into the array stack.
+     */
+    public async injectAdHocStop(latitude: number, longitude: number): Promise<void> {
+        const currentLoc = this.getCurrentLocation();
+        if (!currentLoc) return;
+
+        console.log(`⚡ [DYNAMIC DISPATCH] Intercepting ${this.vanId}! Rerouting to (${latitude.toFixed(4)}, ${longitude.toFixed(4)})...`);
+
+        // Compute an OSRM segment: CurrentLoc -> New Stop -> Next existing stop 
+        // We pick a waypoint roughly '10' ticks ahead to safely smooth the merge back into the original track
+        const targetWp = this.route.waypoints[Math.min(this.waypointIndex + 10, this.route.waypoints.length - 1)];
+
+        const deviation = await fetchOsrmRoute([
+            currentLoc,
+            { latitude, longitude },
+            targetWp
+        ]);
+
+        // Shift our existing stops to accommodate the new stop at our exact current index tier
+        for (let i = this.currentStopIndex; i < this.stopWaypointIndices.length; i++) {
+            this.stopWaypointIndices[i] += deviation.length;
+        }
+
+        // Insert the physical stop object cleanly
+        const adHocStop = {
+            stop_index: this.currentStopIndex,
+            customer_id: 'dispatch-' + Date.now(),
+            location: { latitude, longitude },
+            sla_deadline: new Date(Date.now() + 15 * 60000).toISOString(),
+            parcels: 1
+        };
+
+        this.route.stops.splice(this.currentStopIndex, 0, adHocStop);
+        this.stopWaypointIndices.splice(this.currentStopIndex, 0, this.waypointIndex + Math.floor(deviation.length / 2));
+
+        // Un-shift the OSRM geometric payload securely into the physical navigation iterator
+        this.route.waypoints.splice(this.waypointIndex + 1, 0, ...deviation);
+
+        // Normalize array index headers cleanly
+        for (let i = 0; i < this.route.stops.length; i++) {
+            this.route.stops[i].stop_index = i;
+        }
     }
 }

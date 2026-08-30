@@ -94,7 +94,7 @@ function interpolateWaypoints(from: Waypoint, to: Waypoint): Waypoint[] {
  * Fetch a completely realistic polyline from the Open Source Routing Machine
  * projecting the driving route over physical street geometry.
  */
-async function fetchOsrmRoute(points: Waypoint[]): Promise<Waypoint[]> {
+export async function fetchOsrmRoute(points: Waypoint[]): Promise<Waypoint[]> {
     const coords = points.map(p => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
     const url = `http://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
 

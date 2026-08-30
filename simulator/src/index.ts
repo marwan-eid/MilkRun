@@ -1,6 +1,7 @@
 import { KafkaEventProducer } from './kafka-producer.js';
 import { generateFleetRoutes } from './route-generator.js';
 import { VanSimulator } from './van-simulator.js';
+import { DispatchConsumer } from './dispatch-consumer.js';
 
 /**
  * The Milk-Run Fleet Simulator
@@ -45,6 +46,10 @@ async function main(): Promise<void> {
     // 2. State management for active vans
     const simulators: VanSimulator[] = [];
 
+    // Initialize instantaneous Map Map Interface dispatcher
+    const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators);
+    await dispatchConsumer.connect();
+
     // 3. Generate routes AND start them gracefully one by one
     console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam (Rolling Dispatch)...`);
     const routes = await generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN, (route) => {
@@ -86,6 +91,7 @@ async function main(): Promise<void> {
             sim.stop();
         }
 
+        await dispatchConsumer.disconnect();
         await producer.disconnect();
         console.log('👋 Simulator stopped. Goodbye!');
         process.exit(0);
