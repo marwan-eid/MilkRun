@@ -17,6 +17,19 @@ export class DispatchConsumer {
     }
 
     public async connect(): Promise<void> {
+        // Resolve race condition where NodeJS beats Spring Boot natively to the Kafka Cluster
+        const admin = this.kafka.admin();
+        await admin.connect();
+        const topics = await admin.listTopics();
+        if (!topics.includes('dispatch-events')) {
+            // Attempt an explicit raw partition allocation
+            try {
+                await admin.createTopics({ topics: [{ topic: 'dispatch-events' }] });
+                console.log('🏗️ [DISPATCH DAEMON] Natively partitioned dispatch-events topic.');
+            } catch (ignored) { }
+        }
+        await admin.disconnect();
+
         await this.consumer.connect();
         await this.consumer.subscribe({ topic: 'dispatch-events', fromBeginning: false });
 
