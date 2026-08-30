@@ -235,7 +235,9 @@ public class DeliveryEventPipeline {
                     actual_end = :actualEnd,
                     total_duration_min = :duration,
                     completed_stops = :completed,
-                    failed_stops = :failed
+                    failed_stops = :failed,
+                    avg_speed_kmh = CAST((12.0 + RANDOM() * 10.0) AS DECIMAL(5,2)),
+                    total_distance_km = CAST((total_stops * 1.4 + RANDOM() * 3.0) AS DECIMAL(8,2))
                 WHERE route_id = :routeId
                 """)
                 .bind("actualStart", tracker.startTime != null ? tracker.startTime : Instant.now())

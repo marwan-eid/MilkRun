@@ -109,8 +109,9 @@ export function generateRoute(vanIndex: number, totalStops: number): VanRoute {
         const neighborhood = assignedNeighborhoods[i % assignedNeighborhoods.length];
         const location = scatterPoint(neighborhood.center, neighborhood.radius);
 
-        // Force extremely tight SLA to simulate geofence and traffic delays! (Guaranteed breach for analytics demo)
-        const slaDeadline = new Date(now.getTime() - (i * 60 * 1000) - 300000);
+        // Assign SLA 90 seconds per stop into the future coupled with a base buffer. 
+        // This simulates extremely tight deadlines that require perfect traffic to pass, enabling realistic delay bounds.
+        const slaDeadline = new Date(now.getTime() + (i * 90 * 1000) + 120000);
 
         stops.push({
             stop_index: i,
