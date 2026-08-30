@@ -192,6 +192,10 @@ export async function generateFleetRoutes(vanCount: number, stopsPerVan: number 
         const stops = stopsPerVan - 4 + Math.floor(Math.random() * 9); // 14–22 stops
         const route = await generateRoute(i, stops);
         routes.push(route);
+        // Print progress directly to the console so the user knows we didn't freeze
+        if (i % 5 === 0) {
+            console.log(`   ... fetched mapping geometries for ${i + 1}/${vanCount} vans`);
+        }
         // Implement heavily-compliant 1.5s rate-limit stagger so OSRM API doesn't IP-ban us.
         if (i < vanCount - 1) {
             await new Promise(r => setTimeout(r, 1500));
