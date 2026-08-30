@@ -4,8 +4,16 @@ import { type Waypoint, type RouteStop, type VanRoute } from './models/index.js'
 // Amsterdam area delivery neighborhoods with realistic coordinates
 // ═══════════════════════════════════════════════════════════
 
-/** Distribution hub (starting point for all vans) – Amsterdam Science Park area */
-const HUB: Waypoint = { latitude: 52.3548, longitude: 4.9578 };
+/** 
+ * Decentralized Micro-Hubs (Vans start and end here based on assigned quadrant)
+ * This disperses the vans across Amsterdam rather than chaining them from a single endpoint.
+ */
+const HUBS: Waypoint[] = [
+    { latitude: 52.3548, longitude: 4.9578 }, // East (Original Science Park)
+    { latitude: 52.3950, longitude: 4.8970 }, // North (NDSM Wharf area)
+    { latitude: 52.3420, longitude: 4.8700 }, // South (Zuidas District)
+    { latitude: 52.3700, longitude: 4.8350 }, // West (Rembrandtpark area)
+];
 
 /**
  * Delivery neighborhoods around Amsterdam.
@@ -163,8 +171,11 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
         });
     }
 
+    // Pick the van's specific origin Micro-Hub based on its ID modulo
+    const originHub = HUBS[vanIndex % HUBS.length];
+
     // Build dense waypoints via OSRM: HUB → stop[0] → stop[1] → ... → stop[n] → HUB
-    const allPoints: Waypoint[] = [HUB, ...stops.map((s) => s.location), HUB];
+    const allPoints: Waypoint[] = [originHub, ...stops.map((s) => s.location), originHub];
 
     // Fetch real geography streets polyline
     const waypoints = await fetchOsrmRoute(allPoints);
