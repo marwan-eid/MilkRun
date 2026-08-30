@@ -17,7 +17,7 @@ export function useVanStream() {
     const [connected, setConnected] = useState(false);
     const [lastEvent, setLastEvent] = useState<number>(0);
     const eventSourceRef = useRef<EventSource | null>(null);
-    const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
+    const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const reconnectDelayRef = useRef(1000);
 
     const connect = useCallback(() => {
