@@ -1,0 +1,145 @@
+import { type Waypoint, type RouteStop, type VanRoute } from './models/index.js';
+
+// ═══════════════════════════════════════════════════════════
+// Amsterdam area delivery neighborhoods with realistic coordinates
+// ═══════════════════════════════════════════════════════════
+
+/** Distribution hub (starting point for all vans) – Amsterdam Science Park area */
+const HUB: Waypoint = { latitude: 52.3548, longitude: 4.9578 };
+
+/**
+ * Delivery neighborhoods around Amsterdam.
+ * Each neighborhood has a center and a radius (in degrees ≈ ~100-300m)
+ * that we scatter delivery stops around.
+ */
+const NEIGHBORHOODS = [
+    { name: 'De Pijp', center: { latitude: 52.3520, longitude: 4.8930 }, radius: 0.005 },
+    { name: 'Jordaan', center: { latitude: 52.3740, longitude: 4.8830 }, radius: 0.004 },
+    { name: 'Oud-West', center: { latitude: 52.3650, longitude: 4.8700 }, radius: 0.005 },
+    { name: 'Oost', center: { latitude: 52.3610, longitude: 4.9280 }, radius: 0.006 },
+    { name: 'Noord', center: { latitude: 52.3900, longitude: 4.9200 }, radius: 0.007 },
+    { name: 'Centrum', center: { latitude: 52.3700, longitude: 4.8950 }, radius: 0.004 },
+    { name: 'Amstelveen', center: { latitude: 52.3020, longitude: 4.8500 }, radius: 0.008 },
+    { name: 'Buitenveldert', center: { latitude: 52.3300, longitude: 4.8770 }, radius: 0.005 },
+    { name: 'Watergraafsmeer', center: { latitude: 52.3530, longitude: 4.9350 }, radius: 0.004 },
+    { name: 'Rivierenbuurt', center: { latitude: 52.3450, longitude: 4.9050 }, radius: 0.004 },
+];
+
+/**
+ * Generate a random point near a center within a given radius.
+ */
+function scatterPoint(center: Waypoint, radius: number): Waypoint {
+    const angle = Math.random() * 2 * Math.PI;
+    const r = radius * Math.sqrt(Math.random()); // uniform distribution in circle
+    return {
+        latitude: center.latitude + r * Math.cos(angle),
+        longitude: center.longitude + r * Math.sin(angle),
+    };
+}
+
+/**
+ * Calculate compass bearing from point A to B (in degrees).
+ */
+export function calculateBearing(from: Waypoint, to: Waypoint): number {
+    const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
+    const lat1 = (from.latitude * Math.PI) / 180;
+    const lat2 = (to.latitude * Math.PI) / 180;
+    const y = Math.sin(dLon) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+    return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/**
+ * Haversine distance between two points in km.
+ */
+export function haversineDistance(a: Waypoint, b: Waypoint): number {
+    const R = 6371; // Earth radius in km
+    const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
+    const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
+    const lat1 = (a.latitude * Math.PI) / 180;
+    const lat2 = (b.latitude * Math.PI) / 180;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/**
+ * Interpolate dense waypoints between two locations.
+ * Creates points roughly every ~50 meters for smooth animation.
+ */
+function interpolateWaypoints(from: Waypoint, to: Waypoint): Waypoint[] {
+    const dist = haversineDistance(from, to);
+    const numPoints = Math.max(2, Math.ceil(dist / 0.05)); // ~50m intervals
+    const waypoints: Waypoint[] = [];
+
+    for (let i = 0; i <= numPoints; i++) {
+        const t = i / numPoints;
+        waypoints.push({
+            latitude: from.latitude + t * (to.latitude - from.latitude),
+            longitude: from.longitude + t * (to.longitude - from.longitude),
+        });
+    }
+
+    return waypoints;
+}
+
+/**
+ * Generate a unique customer ID for a stop.
+ */
+function generateCustomerId(vanIndex: number, stopIndex: number): string {
+    return `cust-${String(vanIndex).padStart(3, '0')}-${String(stopIndex).padStart(2, '0')}`;
+}
+
+/**
+ * Generate a single van's route with realistic Amsterdam stops.
+ */
+export function generateRoute(vanIndex: number, totalStops: number): VanRoute {
+    const today = new Date().toISOString().slice(0, 10);
+    const vanId = `van-${String(vanIndex).padStart(3, '0')}`;
+    const routeId = `route-${today}-${vanId}`;
+
+    // Pick 2-4 random neighborhoods for this van to service
+    const shuffled = [...NEIGHBORHOODS].sort(() => Math.random() - 0.5);
+    const assignedNeighborhoods = shuffled.slice(0, 2 + Math.floor(Math.random() * 3));
+
+    // Distribute stops across the selected neighborhoods
+    const stops: RouteStop[] = [];
+    const now = new Date();
+
+    for (let i = 0; i < totalStops; i++) {
+        const neighborhood = assignedNeighborhoods[i % assignedNeighborhoods.length];
+        const location = scatterPoint(neighborhood.center, neighborhood.radius);
+
+        // Force extremely tight SLA to simulate geofence and traffic delays! (Guaranteed breach for analytics demo)
+        const slaDeadline = new Date(now.getTime() - (i * 60 * 1000) - 300000);
+
+        stops.push({
+            stop_index: i,
+            customer_id: generateCustomerId(vanIndex, i),
+            location,
+            sla_deadline: slaDeadline.toISOString(),
+            parcels: 1 + Math.floor(Math.random() * 5),
+        });
+    }
+
+    // Build dense waypoints: HUB → stop[0] → stop[1] → ... → stop[n] → HUB
+    const allPoints: Waypoint[] = [HUB, ...stops.map((s) => s.location), HUB];
+    const waypoints: Waypoint[] = [];
+
+    for (let i = 0; i < allPoints.length - 1; i++) {
+        const segment = interpolateWaypoints(allPoints[i], allPoints[i + 1]);
+        // Skip the first point of each subsequent segment to avoid duplicates
+        waypoints.push(...(i === 0 ? segment : segment.slice(1)));
+    }
+
+    return { route_id: routeId, van_id: vanId, stops, waypoints };
+}
+
+/**
+ * Generate routes for the entire fleet.
+ */
+export function generateFleetRoutes(vanCount: number, stopsPerVan: number = 18): VanRoute[] {
+    return Array.from({ length: vanCount }, (_, i) => {
+        const stops = stopsPerVan - 4 + Math.floor(Math.random() * 9); // 14–22 stops
+        return generateRoute(i, stops);
+    });
+}

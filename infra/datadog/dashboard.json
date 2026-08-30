@@ -1,0 +1,191 @@
+{
+    "title": "Milk-Run Fleet Operations",
+    "description": "Real-time delivery fleet monitoring dashboard — The Milk-Run",
+    "widgets": [
+        {
+            "id": 1,
+            "title": "Active Vans",
+            "type": "query_value",
+            "query": "milkrun.pipeline.active_vans",
+            "position": {
+                "x": 0,
+                "y": 0,
+                "width": 3,
+                "height": 2
+            }
+        },
+        {
+            "id": 2,
+            "title": "Events/sec (Received)",
+            "type": "timeseries",
+            "query": "rate(milkrun_events_received_total[1m])",
+            "position": {
+                "x": 3,
+                "y": 0,
+                "width": 5,
+                "height": 3
+            }
+        },
+        {
+            "id": 3,
+            "title": "Events/sec (Processed)",
+            "type": "timeseries",
+            "query": "rate(milkrun_events_processed_total[1m])",
+            "position": {
+                "x": 8,
+                "y": 0,
+                "width": 5,
+                "height": 3
+            }
+        },
+        {
+            "id": 4,
+            "title": "Duplicate Rejection Rate",
+            "type": "query_value",
+            "query": "rate(milkrun_events_deduplicated_total[5m]) / rate(milkrun_events_received_total[5m]) * 100",
+            "unit": "%",
+            "thresholds": {
+                "warning": 5,
+                "critical": 15
+            },
+            "position": {
+                "x": 0,
+                "y": 3,
+                "width": 3,
+                "height": 2
+            }
+        },
+        {
+            "id": 5,
+            "title": "SLA Warnings",
+            "type": "query_value",
+            "query": "milkrun_sla_warnings_total",
+            "color": "#f59e0b",
+            "position": {
+                "x": 3,
+                "y": 3,
+                "width": 2,
+                "height": 2
+            }
+        },
+        {
+            "id": 6,
+            "title": "SLA Critical",
+            "type": "query_value",
+            "query": "milkrun_sla_criticals_total",
+            "color": "#ef4444",
+            "position": {
+                "x": 5,
+                "y": 3,
+                "width": 2,
+                "height": 2
+            }
+        },
+        {
+            "id": 7,
+            "title": "Circuit Breaker Fallbacks",
+            "type": "timeseries",
+            "query": "rate(milkrun_circuit_breaker_fallbacks_total[5m])",
+            "color": "#ef4444",
+            "position": {
+                "x": 7,
+                "y": 3,
+                "width": 3,
+                "height": 3
+            }
+        },
+        {
+            "id": 8,
+            "title": "ETA Calculations/sec",
+            "type": "timeseries",
+            "query": "rate(milkrun_eta_calculations_total[1m])",
+            "position": {
+                "x": 0,
+                "y": 5,
+                "width": 5,
+                "height": 3
+            }
+        },
+        {
+            "id": 9,
+            "title": "DLQ Events",
+            "type": "timeseries",
+            "query": "rate(milkrun_dlq_writes_total[5m])",
+            "color": "#f59e0b",
+            "position": {
+                "x": 5,
+                "y": 5,
+                "width": 4,
+                "height": 3
+            }
+        },
+        {
+            "id": 10,
+            "title": "GPS Archive Write Rate",
+            "type": "timeseries",
+            "query": "rate(milkrun_gps_archived_total[1m])",
+            "position": {
+                "x": 9,
+                "y": 5,
+                "width": 4,
+                "height": 3
+            }
+        },
+        {
+            "id": 11,
+            "title": "Deserialization Errors",
+            "type": "query_value",
+            "query": "milkrun_events_deserialization_errors_total",
+            "color": "#ef4444",
+            "thresholds": {
+                "warning": 10,
+                "critical": 100
+            },
+            "position": {
+                "x": 10,
+                "y": 3,
+                "width": 3,
+                "height": 2
+            }
+        },
+        {
+            "id": 12,
+            "title": "JVM Heap Usage",
+            "type": "timeseries",
+            "query": "jvm_memory_used_bytes{area=\"heap\"} / jvm_memory_max_bytes{area=\"heap\"} * 100",
+            "unit": "%",
+            "thresholds": {
+                "warning": 75,
+                "critical": 90
+            },
+            "position": {
+                "x": 0,
+                "y": 8,
+                "width": 6,
+                "height": 3
+            }
+        },
+        {
+            "id": 13,
+            "title": "HTTP Request Duration (p99)",
+            "type": "timeseries",
+            "query": "histogram_quantile(0.99, rate(http_server_requests_seconds_bucket[5m]))",
+            "unit": "seconds",
+            "position": {
+                "x": 6,
+                "y": 8,
+                "width": 7,
+                "height": 3
+            }
+        }
+    ],
+    "template_variables": [
+        {
+            "name": "environment",
+            "default": "production",
+            "prefix": "env"
+        }
+    ],
+    "notify_list": [],
+    "layout_type": "ordered"
+}

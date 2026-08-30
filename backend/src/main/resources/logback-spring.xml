@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- ═══ Structured JSON logging for production ═══ -->
+    <!-- In dev: plain text. In production: JSON lines for Datadog/ELK -->
+
+    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
+
+    <!-- Console appender (dev mode — human readable) -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- JSON appender (production — structured for Datadog/ELK) -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+            <pattern>{"timestamp":"%d{ISO8601}","level":"%level","logger":"%logger{36}","thread":"%thread","message":"%msg","service":"milkrun-backend"}%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Application loggers -->
+    <logger name="com.milkrun" level="DEBUG" />
+    <logger name="com.milkrun.pipeline" level="INFO" />
+    <logger name="com.milkrun.consumer" level="INFO" />
+
+    <!-- Framework loggers (reduce noise) -->
+    <logger name="reactor.kafka" level="WARN" />
+    <logger name="org.apache.kafka" level="WARN" />
+    <logger name="org.apache.calcite" level="WARN" />
+    <logger name="io.netty" level="WARN" />
+    <logger name="io.r2dbc" level="WARN" />
+
+    <!-- Root: use CONSOLE in dev, switch to JSON via Spring profile -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+    </root>
+
+    <!-- Production profile: JSON structured logging -->
+    <springProfile name="prod">
+        <root level="INFO">
+            <appender-ref ref="JSON" />
+        </root>
+    </springProfile>
+</configuration>

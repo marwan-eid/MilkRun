@@ -1,0 +1,22 @@
+[
+    {
+        "name": "com.milkrun.model.GpsEvent",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
+    },
+    {
+        "name": "com.milkrun.model.DeliveryEvent",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
+    },
+    {
+        "name": "com.milkrun.model.VanState",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
+    },
+    {
+        "name": "com.milkrun.model.Location",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
+    }
+]

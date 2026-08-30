@@ -1,0 +1,68 @@
+spring:
+  application:
+    name: milkrun-backend
+
+  # ═══ R2DBC PostgreSQL ═══
+  r2dbc:
+    url: r2dbc:postgresql://localhost:5432/milkrun
+    username: milkrun
+    password: milkrun_secret
+
+  # ═══ CORS (allow React dev server) ═══
+  webflux:
+    cors:
+      allowed-origins: "http://localhost:5173,http://localhost:3000"
+      allowed-methods: GET,POST
+      allowed-headers: "*"
+
+# ═══ Kafka ═══
+milkrun:
+  kafka:
+    bootstrap-servers: localhost:9092
+    gps-topic: gps-events
+    delivery-topic: delivery-events
+    dlq-topic: gps-events-dlq
+    consumer-group: milkrun-engine
+  pipeline:
+    dedup-expected-insertions: 100000
+    dedup-false-positive-rate: 0.001
+    reorder-buffer-grace-ms: 3000
+    reorder-buffer-max-size: 50
+  eta:
+    sla-warning-buffer-seconds: 120
+    sla-critical-buffer-seconds: 30
+  backpressure:
+    sample-interval-ms: 500
+
+# ═══ Resilience4j Circuit Breaker ═══
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        slidingWindowSize: 20
+        failureRateThreshold: 50
+        waitDurationInOpenState: 10000
+        permittedNumberOfCallsInHalfOpenState: 5
+        slowCallDurationThreshold: 2000
+        slowCallRateThreshold: 80
+
+# ═══ Actuator ═══
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
+  metrics:
+    tags:
+      application: milkrun
+    export:
+      prometheus:
+        enabled: true
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.milkrun: DEBUG
+    reactor.kafka: INFO
