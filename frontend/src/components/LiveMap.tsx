@@ -21,12 +21,12 @@ export function LiveMap({ vans, selectedVanId, onSelectVan }: LiveMapProps) {
         const [clickPos, setClickPos] = useState<{ lat: number, lng: number } | null>(null);
 
         useMapEvents({
-            click: async (e) => {
+            contextmenu: async (e) => {
                 const { lat, lng } = e.latlng;
                 setClickPos({ lat, lng });
 
                 try {
-                    await fetch('/api/dispatch', {
+                    await fetch('http://localhost:8080/api/dispatch', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ latitude: lat, longitude: lng })
