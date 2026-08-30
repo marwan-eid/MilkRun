@@ -1,0 +1,62 @@
+name: MilkRun Full-Stack CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  simulator-tests:
+    name: Node.js Simulator CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install Dependencies
+        working-directory: simulator
+        run: npm ci || npm install
+        
+      - name: Execute Vitest Suite
+        working-directory: simulator
+        run: npm run test
+
+  backend-tests:
+    name: Java Spring Boot CI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup GraalVM JDK 21
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'maven'
+          
+      - name: Run Maven Unit Tests
+        working-directory: backend
+        run: mvn -B test
+
+  frontend-build:
+    name: React Frontend Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Setup Node.js 18
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Verify Application Build
+        working-directory: frontend
+        run: |
+          npm ci || npm install
+          npm run build
