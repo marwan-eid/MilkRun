@@ -18,7 +18,33 @@ export default function App() {
         vanCount={vans.size}
         lastEvent={lastEvent}
       />
-      <div className="main-content">
+      <div className="main-content" style={{ position: 'relative' }}>
+
+        {/* Dynamic Dispatch UI Hint Overlay */}
+        <div style={{
+          position: 'absolute',
+          top: '16px',
+          left: 'calc(50% - 160px)', /* Centered over the map portion (accounting for the 320px SLA Panel on the right) */
+          transform: 'translateX(-50%)',
+          background: 'var(--glass)',
+          border: '1px solid var(--glass-border)',
+          padding: '8px 20px',
+          borderRadius: '24px',
+          zIndex: 400,
+          color: 'var(--text-secondary)',
+          fontSize: '13px',
+          fontWeight: 500,
+          pointerEvents: 'none',
+          backdropFilter: 'blur(12px)',
+          boxShadow: 'var(--shadow)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          animation: 'slideUp 0.5s ease-out'
+        }}>
+          💡 <span style={{ color: 'var(--text-primary)' }}>Right-Click</span> anywhere to dispatch an order
+        </div>
+
         <LiveMap
           vans={vans}
           selectedVanId={selectedVanId}
