@@ -39,8 +39,8 @@ console.log(`
 
 async function main(): Promise<void> {
     // 1. Generate routes
-    console.log(`🗺️  Generating ${VAN_COUNT} routes across Amsterdam...`);
-    const routes = generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN);
+    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam...`);
+    const routes = await generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN);
     const totalStops = routes.reduce((sum, r) => sum + r.stops.length, 0);
     const totalWaypoints = routes.reduce((sum, r) => sum + r.waypoints.length, 0);
     console.log(`   → ${totalStops} total delivery stops, ${totalWaypoints} GPS waypoints\n`);

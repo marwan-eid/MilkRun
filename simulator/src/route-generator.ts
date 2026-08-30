@@ -83,6 +83,47 @@ function interpolateWaypoints(from: Waypoint, to: Waypoint): Waypoint[] {
 }
 
 /**
+ * Fetch a completely realistic polyline from the Open Source Routing Machine
+ * projecting the driving route over physical street geometry.
+ */
+async function fetchOsrmRoute(points: Waypoint[]): Promise<Waypoint[]> {
+    const coords = points.map(p => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
+    const url = `http://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+
+    try {
+        const response = await fetch(url);
+        if (!response.ok) {
+            console.warn(`OSRM API Error: ${response.status} - Falling back to Cartesian geometry.`);
+            return fallbackOsrmRoute(points);
+        }
+
+        const data = await response.json();
+        if (!data.routes || data.routes.length === 0) {
+            return fallbackOsrmRoute(points);
+        }
+
+        const geo = data.routes[0].geometry.coordinates; // [ [lon, lat], ... ]
+        return geo.map((c: number[]) => ({
+            longitude: c[0],
+            latitude: c[1]
+        }));
+    } catch (e) {
+        console.warn(`OSRM API Offline: Falling back to Cartesian geometry.`);
+        return fallbackOsrmRoute(points);
+    }
+}
+
+/** Fallback method routing points together linearly if OSRM rejects the HTTP payload (e.g. Rate Limit IP Ban) */
+function fallbackOsrmRoute(points: Waypoint[]): Waypoint[] {
+    const waypoints: Waypoint[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+        const segment = interpolateWaypoints(points[i], points[i + 1]);
+        waypoints.push(...(i === 0 ? segment : segment.slice(1)));
+    }
+    return waypoints;
+}
+
+/**
  * Generate a unique customer ID for a stop.
  */
 function generateCustomerId(vanIndex: number, stopIndex: number): string {
@@ -92,7 +133,7 @@ function generateCustomerId(vanIndex: number, stopIndex: number): string {
 /**
  * Generate a single van's route with realistic Amsterdam stops.
  */
-export function generateRoute(vanIndex: number, totalStops: number): VanRoute {
+export async function generateRoute(vanIndex: number, totalStops: number): Promise<VanRoute> {
     const today = new Date().toISOString().slice(0, 10);
     const vanId = `van-${String(vanIndex).padStart(3, '0')}`;
     const routeId = `route-${today}-${vanId}`;
@@ -122,25 +163,28 @@ export function generateRoute(vanIndex: number, totalStops: number): VanRoute {
         });
     }
 
-    // Build dense waypoints: HUB → stop[0] → stop[1] → ... → stop[n] → HUB
+    // Build dense waypoints via OSRM: HUB → stop[0] → stop[1] → ... → stop[n] → HUB
     const allPoints: Waypoint[] = [HUB, ...stops.map((s) => s.location), HUB];
-    const waypoints: Waypoint[] = [];
 
-    for (let i = 0; i < allPoints.length - 1; i++) {
-        const segment = interpolateWaypoints(allPoints[i], allPoints[i + 1]);
-        // Skip the first point of each subsequent segment to avoid duplicates
-        waypoints.push(...(i === 0 ? segment : segment.slice(1)));
-    }
+    // Fetch real geography streets polyline
+    const waypoints = await fetchOsrmRoute(allPoints);
 
     return { route_id: routeId, van_id: vanId, stops, waypoints };
 }
 
 /**
- * Generate routes for the entire fleet.
+ * Generate routes for the entire fleet sequentially to respect OSRM HTTP throttles.
  */
-export function generateFleetRoutes(vanCount: number, stopsPerVan: number = 18): VanRoute[] {
-    return Array.from({ length: vanCount }, (_, i) => {
+export async function generateFleetRoutes(vanCount: number, stopsPerVan: number = 18): Promise<VanRoute[]> {
+    const routes: VanRoute[] = [];
+    for (let i = 0; i < vanCount; i++) {
         const stops = stopsPerVan - 4 + Math.floor(Math.random() * 9); // 14–22 stops
-        return generateRoute(i, stops);
-    });
+        const route = await generateRoute(i, stops);
+        routes.push(route);
+        // Implement heavily-compliant 1.5s rate-limit stagger so OSRM API doesn't IP-ban us.
+        if (i < vanCount - 1) {
+            await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+    return routes;
 }
