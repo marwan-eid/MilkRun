@@ -38,31 +38,28 @@ console.log(`
 `);
 
 async function main(): Promise<void> {
-    // 1. Generate routes
-    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam...`);
-    const routes = await generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN);
-    const totalStops = routes.reduce((sum, r) => sum + r.stops.length, 0);
-    const totalWaypoints = routes.reduce((sum, r) => sum + r.waypoints.length, 0);
-    console.log(`   → ${totalStops} total delivery stops, ${totalWaypoints} GPS waypoints\n`);
-
-    // 2. Connect to Kafka
+    // 1. Connect to Kafka FIRST so we can enable rolling dispatch
     const producer = new KafkaEventProducer(KAFKA_BROKERS);
     await producer.connect();
 
-    // 3. Create and start van simulators
-    const simulators: VanSimulator[] = routes.map(
-        (route) =>
-            new VanSimulator(route, producer, {
-                pingIntervalMs: PING_INTERVAL_MS,
-                chaosEnabled: CHAOS_ENABLED,
-            }),
-    );
+    // 2. State management for active vans
+    const simulators: VanSimulator[] = [];
 
-    // Stagger van starts to avoid thundering herd on Kafka
-    console.log(`🚀 Launching ${VAN_COUNT} vans (staggered over ${VAN_COUNT * 50}ms)...\n`);
-    for (let i = 0; i < simulators.length; i++) {
-        setTimeout(() => simulators[i].start(), i * 50);
-    }
+    // 3. Generate routes AND start them gracefully one by one
+    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam (Rolling Dispatch)...`);
+    const routes = await generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN, (route) => {
+        const sim = new VanSimulator(route, producer, {
+            pingIntervalMs: PING_INTERVAL_MS,
+            chaosEnabled: CHAOS_ENABLED,
+        });
+        simulators.push(sim);
+        // Start moving the simulated van immediately as its map geometries resolve!
+        sim.start();
+    });
+
+    const totalStops = routes.reduce((sum, r) => sum + r.stops.length, 0);
+    const totalWaypoints = routes.reduce((sum, r) => sum + r.waypoints.length, 0);
+    console.log(`\n   → ${totalStops} total delivery stops, ${totalWaypoints} GPS waypoints fetched!`);
 
     // 4. Stats reporter
     const statsInterval = setInterval(() => {

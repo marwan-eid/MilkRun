@@ -186,12 +186,18 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
 /**
  * Generate routes for the entire fleet sequentially to respect OSRM HTTP throttles.
  */
-export async function generateFleetRoutes(vanCount: number, stopsPerVan: number = 18): Promise<VanRoute[]> {
+export async function generateFleetRoutes(
+    vanCount: number,
+    stopsPerVan: number = 18,
+    onRouteGenerated?: (route: VanRoute) => void
+): Promise<VanRoute[]> {
     const routes: VanRoute[] = [];
     for (let i = 0; i < vanCount; i++) {
         const stops = stopsPerVan - 4 + Math.floor(Math.random() * 9); // 14–22 stops
         const route = await generateRoute(i, stops);
         routes.push(route);
+
+        if (onRouteGenerated) onRouteGenerated(route);
         // Print progress directly to the console so the user knows we didn't freeze
         if (i % 5 === 0) {
             console.log(`   ... fetched mapping geometries for ${i + 1}/${vanCount} vans`);
