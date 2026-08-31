@@ -13,10 +13,10 @@ spring:
     username: milkrun
     password: milkrun_secret
 
-  # ═══ CORS (allow React dev server) ═══
+  # ═══ CORS (allow React dev server & Production VM) ═══
   webflux:
     cors:
-      allowed-origins: "http://localhost:5173,http://localhost:3000"
+      allowed-origins: "*"
       allowed-methods: GET,POST
       allowed-headers: "*"
 
