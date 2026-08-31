@@ -21,11 +21,7 @@ spring:
       allowed-headers: "*"
 
 # ═══ Kafka ═══
-spring:
-  kafka:
-    bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
 milkrun:
   kafka:
     bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
