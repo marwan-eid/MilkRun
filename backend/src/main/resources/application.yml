@@ -16,9 +16,14 @@ spring:
       allowed-headers: "*"
 
 # ═══ Kafka ═══
+spring:
+  kafka:
+    bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 milkrun:
   kafka:
-    bootstrap-servers: localhost:9092
+    bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     gps-topic: gps-events
     delivery-topic: delivery-events
     dlq-topic: gps-events-dlq
