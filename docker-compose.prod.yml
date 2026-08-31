@@ -66,6 +66,7 @@ services:
     environment:
       - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/milkrun
       - MILKRUN_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     restart: on-failure
 
   # ==========================================
