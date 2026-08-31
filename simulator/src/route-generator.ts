@@ -144,7 +144,8 @@ function generateCustomerId(vanIndex: number, stopIndex: number): string {
 export async function generateRoute(vanIndex: number, totalStops: number): Promise<VanRoute> {
     const today = new Date().toISOString().slice(0, 10);
     const vanId = `van-${String(vanIndex).padStart(3, '0')}`;
-    const routeId = `route-${today}-${vanId}`;
+    const runId = Math.floor(Date.now() / 1000).toString();
+    const routeId = `route-${today}-${vanId}-${runId}`;
 
     // Pick 2-4 random neighborhoods for this van to service
     const shuffled = [...NEIGHBORHOODS].sort(() => Math.random() - 0.5);
