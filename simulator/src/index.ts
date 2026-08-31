@@ -1,5 +1,5 @@
 import { KafkaEventProducer } from './kafka-producer.js';
-import { generateFleetRoutes } from './route-generator.js';
+import { generateRoute } from './route-generator.js';
 import { VanSimulator } from './van-simulator.js';
 import { DispatchConsumer } from './dispatch-consumer.js';
 
@@ -50,21 +50,42 @@ async function main(): Promise<void> {
     const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators);
     await dispatchConsumer.connect();
 
-    // 3. Generate routes AND start them gracefully one by one
-    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam (Rolling Dispatch)...`);
-    const routes = await generateFleetRoutes(VAN_COUNT, STOPS_PER_VAN, (route) => {
+    // 3. Recursive Engine: dynamically orchestrates, builds and respawns individual vans forever natively 
+    const deployVan = async (vanIndex: number) => {
+        const stops = STOPS_PER_VAN - 4 + Math.floor(Math.random() * 9);
+        const route = await generateRoute(vanIndex, stops);
+
         const sim = new VanSimulator(route, producer, {
             pingIntervalMs: PING_INTERVAL_MS,
             chaosEnabled: CHAOS_ENABLED,
+            onRouteCompleted: async (vanId) => {
+                console.log(`♻️  Cycling Van Pipeline: Respawning ${vanId} out to a new neighborhood...`);
+                // Physically surgically slice the old van exactly out of Javascript V8 Node Memory!
+                const idx = simulators.findIndex(s => s.vanId === vanId);
+                if (idx > -1) {
+                    simulators.splice(idx, 1);
+                }
+                // 1-second algorithmic breather before launching the next physical shift!
+                setTimeout(() => deployVan(vanIndex), 1000);
+            }
         });
-        simulators.push(sim);
-        // Start moving the simulated van immediately as its map geometries resolve!
-        sim.start();
-    });
 
-    const totalStops = routes.reduce((sum, r) => sum + r.stops.length, 0);
-    const totalWaypoints = routes.reduce((sum, r) => sum + r.waypoints.length, 0);
-    console.log(`\n   → ${totalStops} total delivery stops, ${totalWaypoints} GPS waypoints fetched!`);
+        simulators.push(sim);
+        sim.start();  // Spin up Kafka threads
+    };
+
+    console.log(`\n🗺️  Generating ${VAN_COUNT} Perpetual routes across Amsterdam (Infinite Loop Active)...`);
+    for (let i = 0; i < VAN_COUNT; i++) {
+        await deployVan(i);
+        if (i % 5 === 0) {
+            console.log(`   ... locked geometries and mounted ${i + 1}/${VAN_COUNT} vans dynamically`);
+        }
+        // Force the same OSRM Anti-Spam stagger
+        if (i < VAN_COUNT - 1) {
+            await new Promise(r => setTimeout(r, 1500));
+        }
+    }
+
 
     // 4. Stats reporter
     const statsInterval = setInterval(() => {

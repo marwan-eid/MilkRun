@@ -18,6 +18,8 @@ export interface VanSimulatorConfig {
     deliveryDurationMaxSec: number;
     /** Whether to enable chaos modules. Default: true */
     chaosEnabled: boolean;
+    /** Callback strictly fired when the vehicle finalizes the RETURNED sequence */
+    onRouteCompleted?: (vanId: string) => void;
 }
 
 const DEFAULT_CONFIG: VanSimulatorConfig = {
@@ -180,6 +182,9 @@ export class VanSimulator {
             await this.emitGpsPing(0);
             console.log(`✅ ${this.route.van_id} completed route`);
             await this.stop();
+            if (this.config.onRouteCompleted) {
+                this.config.onRouteCompleted(this.route.van_id);
+            }
         }
     }
 
