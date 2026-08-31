@@ -2,6 +2,11 @@ spring:
   application:
     name: milkrun-backend
 
+  kafka:
+    bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
   # ═══ R2DBC PostgreSQL ═══
   r2dbc:
     url: r2dbc:postgresql://localhost:5432/milkrun
