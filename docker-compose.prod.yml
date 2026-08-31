@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  #   Infrastructure: Zookeeper & Kafka
+  # ==========================================
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    restart: always
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    restart: always
+
+  # ==========================================
+  #   Database: PostgreSQL + PostGIS (Analytics)
+  # ==========================================
+  postgres:
+    image: postgis/postgis:15-3.3
+    environment:
+      POSTGRES_USER: milkrun
+      POSTGRES_PASSWORD: milkrun_secret
+      POSTGRES_DB: milkrun
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U milkrun" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  # ==========================================
+  #   Application: Java Spring Boot Engine
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/milkrun
+      - MILKRUN_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    restart: on-failure
+
+  # ==========================================
+  #   Application: Node.js TSX Simulator
+  # ==========================================
+  simulator:
+    build:
+      context: ./simulator
+    depends_on:
+      kafka:
+        condition: service_started
+      backend:
+        condition: service_started
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - VAN_COUNT=50
+    restart: on-failure
+
+  # ==========================================
+  #   Application: React Vite + Nginx Reverse Proxy
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    restart: always

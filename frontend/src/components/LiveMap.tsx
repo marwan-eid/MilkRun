@@ -26,7 +26,7 @@ export function LiveMap({ vans, selectedVanId, onSelectVan }: LiveMapProps) {
                 setClickPos({ lat, lng });
 
                 try {
-                    await fetch('http://localhost:8080/api/dispatch', {
+                    await fetch('/api/dispatch', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ latitude: lat, longitude: lng })
