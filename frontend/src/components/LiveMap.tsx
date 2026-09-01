@@ -65,14 +65,23 @@ export function LiveMap({ vans, selectedVanId, onSelectVan }: LiveMapProps) {
 
             <DispatchLayer />
 
-            {Array.from(vans.values()).map(van => (
-                <VanMarker
-                    key={van.van_id}
-                    van={van}
-                    isSelected={van.van_id === selectedVanId}
-                    onClick={onSelectVan}
-                />
-            ))}
+            {vans.size === 0 ? (
+                <div className="loading-overlay">
+                    <div className="loading-content">
+                        <div className="loading-spinner"></div>
+                        <div className="loading-text">Initializing simulation fleet...</div>
+                    </div>
+                </div>
+            ) : (
+                Array.from(vans.values()).map(van => (
+                    <VanMarker
+                        key={van.van_id}
+                        van={van}
+                        isSelected={van.van_id === selectedVanId}
+                        onClick={onSelectVan}
+                    />
+                ))
+            )}
         </MapContainer>
     );
 }
