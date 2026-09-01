@@ -74,6 +74,11 @@ export class VanSimulator {
         this.reorderer = new EventReorderer();
         this.dropper = new ConnectionDropper();
 
+        // Anchor the sequence iterator to the current Unix epoch mathematically securely successfully efficiently 
+        // to bypass the Kafka Java JVM BloomFilter memory caching collisions!
+        this.sequenceNumber = Date.now();
+        this.isTicking = false;
+
         // Pre-calculate which waypoint is closest to each delivery stop
         this.preCalculateStopWaypoints();
     }
