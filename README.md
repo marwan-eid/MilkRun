@@ -99,13 +99,13 @@ mvn spring-boot:run -P local-dev
 Per-van reorder buffer with configurable grace window and PriorityQueue. Late events routed to DLQ for audit.
 
 ### Bloom Filter Deduplication
-FNV-1a double-hashing Bloom filter catches duplicate GPS events from cellular retry storms.
+FNV-1a double-hashing Bloom filter catches duplicate GPS events from cellular retry storms. Sequence iterators are anchored to the Unix epoch to automatically avoid cross-deployment memory collisions.
 
 ### ETA Engine with Circuit Breaker
 Haversine distance + geofence speed factors + SLA risk prediction. Resilience4j circuit breaker with linear extrapolation fallback.
 
 ### Reactive Backpressure
-`Flux.groupBy(vanId).flatMap(g -> g.sample(500ms))` — max 2 SSE updates/sec/van.
+`Sinks.many().multicast().directBestEffort()` intelligently drops payloads for disconnected or sleeping TCP sockets without locking the global emitter array.
 
 ### Apache Calcite Query Federation
 Federated SQL layer over PostgreSQL for analytical queries without impacting the reactive connection pool.
