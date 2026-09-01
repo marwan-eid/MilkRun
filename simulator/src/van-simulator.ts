@@ -131,60 +131,68 @@ export class VanSimulator {
         this.status = 'IDLE';
     }
 
+    private isTicking = false;
+
     /**
      * Main simulation tick — runs every `pingIntervalMs`.
      */
     private async tick(): Promise<void> {
-        const now = Date.now();
+        if (this.isTicking) return;
+        this.isTicking = true;
+        try {
+            const now = Date.now();
 
-        // Handle DELIVERING state — wait for delivery to complete
-        if (this.status === 'DELIVERING') {
-            if (now >= this.deliveringUntil) {
-                await this.completeDelivery();
-                this.status = this.currentStopIndex >= this.route.stops.length ? 'RETURNING' : 'EN_ROUTE';
-            }
-            // Still emit GPS pings while stationary (speed = 0)
-            await this.emitGpsPing(0);
-            return;
-        }
-
-        // Advance along waypoints
-        if (this.waypointIndex < this.route.waypoints.length - 1) {
-            // Speed with some variation (±20%)
-            const speedVariation = 0.8 + Math.random() * 0.4;
-            const effectiveSpeed = this.config.baseSpeedKmh * speedVariation;
-
-            // How many waypoints to skip this tick (based on speed)
-            const waypointsPerTick = Math.max(1, Math.round(effectiveSpeed / 30));
-            this.waypointIndex = Math.min(
-                this.waypointIndex + waypointsPerTick,
-                this.route.waypoints.length - 1,
-            );
-
-            // Drain battery (very slowly)
-            if (Math.random() < 0.01) {
-                this.batteryPct = Math.max(5, this.batteryPct - 1);
-            }
-
-            // Check if we've reached the next delivery stop
-            if (
-                this.currentStopIndex < this.route.stops.length &&
-                this.waypointIndex >= this.stopWaypointIndices[this.currentStopIndex]
-            ) {
-                await this.arriveAtStop();
+            // Handle DELIVERING state — wait for delivery to complete
+            if (this.status === 'DELIVERING') {
+                if (now >= this.deliveringUntil) {
+                    await this.completeDelivery();
+                    this.status = this.currentStopIndex >= this.route.stops.length ? 'RETURNING' : 'EN_ROUTE';
+                }
+                // Still emit GPS pings while stationary (speed = 0)
+                await this.emitGpsPing(0);
                 return;
             }
 
-            await this.emitGpsPing(effectiveSpeed);
-        } else {
-            // Route complete — emit final RETURNED ping
-            this.status = 'RETURNED';
-            await this.emitGpsPing(0);
-            console.log(`✅ ${this.route.van_id} completed route`);
-            await this.stop();
-            if (this.config.onRouteCompleted) {
-                this.config.onRouteCompleted(this.route.van_id);
+            // Advance along waypoints
+            if (this.waypointIndex < this.route.waypoints.length - 1) {
+                // Speed with some variation (±20%)
+                const speedVariation = 0.8 + Math.random() * 0.4;
+                const effectiveSpeed = this.config.baseSpeedKmh * speedVariation;
+
+                // How many waypoints to skip this tick (based on speed)
+                const waypointsPerTick = Math.max(1, Math.round(effectiveSpeed / 30));
+                this.waypointIndex = Math.min(
+                    this.waypointIndex + waypointsPerTick,
+                    this.route.waypoints.length - 1,
+                );
+
+                // Drain battery (very slowly)
+                if (Math.random() < 0.01) {
+                    this.batteryPct = Math.max(5, this.batteryPct - 1);
+                }
+
+                // Check if we've reached the next delivery stop
+                if (
+                    this.currentStopIndex < this.route.stops.length &&
+                    this.waypointIndex >= this.stopWaypointIndices[this.currentStopIndex]
+                ) {
+                    await this.arriveAtStop();
+                    return;
+                }
+
+                await this.emitGpsPing(effectiveSpeed);
+            } else {
+                // Route complete — emit final RETURNED ping
+                this.status = 'RETURNED';
+                await this.emitGpsPing(0);
+                console.log(`✅ ${this.route.van_id} completed route`);
+                await this.stop();
+                if (this.config.onRouteCompleted) {
+                    this.config.onRouteCompleted(this.route.van_id);
+                }
             }
+        } finally {
+            this.isTicking = false;
         }
     }
 
