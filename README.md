@@ -1,6 +1,8 @@
 # 🥛 The Milk-Run — Live Delivery Tracker
 
 [![MilkRun Full-Stack CI](https://github.com/marwan-eid/MilkRun/actions/workflows/ci.yml/badge.svg)](https://github.com/marwan-eid/MilkRun/actions/workflows/ci.yml)
+**[Live Demo: marwan-milkrun.duckdns.org](https://marwan-milkrun.duckdns.org/)**
+
 A real-time, event-driven fleet tracking system demonstrating distributed systems proficiency. Simulates Picnic Technologies' milkman-style delivery routing with 50 electric vans in Amsterdam.
 
 ## Architecture

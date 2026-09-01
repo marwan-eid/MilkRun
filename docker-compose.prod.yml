@@ -93,9 +93,27 @@ services:
       context: ./frontend
     depends_on:
       - backend
+    restart: always
+
+  # ==========================================
+  #   Edge Proxy: SSL Let's Encrypt Caddy Auto HTTPS
+  # ==========================================
+  caddy:
+    image: caddy:2.7.6-alpine
+    container_name: milkrun-caddy
+    restart: unless-stopped
     ports:
       - "80:80"
-    restart: always
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
 
 volumes:
   postgres-data:
+  caddy_data:
+  caddy_config:
