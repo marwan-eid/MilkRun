@@ -31,7 +31,7 @@ export class DispatchConsumer {
         await admin.disconnect();
 
         await this.consumer.connect();
-        await this.consumer.subscribe({ topic: 'dispatch-events', fromBeginning: false });
+        await this.consumer.subscribe({ topic: 'dispatch-events', fromBeginning: true });
 
         console.log('📡 [DISPATCH DAEMON] Subscribed and listening for ad-hoc UI map injections...');
 
@@ -39,6 +39,7 @@ export class DispatchConsumer {
             eachMessage: async ({ message }) => {
                 try {
                     if (!message.value) return;
+                    console.log('🚨 [RAW KAFKA DISPATCH TRACE] Payload intercepted directly from Kafka broker:', message.value.toString());
                     const payload = JSON.parse(message.value.toString());
                     const { latitude, longitude } = payload;
 
