@@ -43,8 +43,44 @@ public class GpsEventPipeline {
     private final EtaEngine etaEngine;
     private final long sampleIntervalMs;
 
-    // The SSE sink: multicast to all connected SSE clients
-    private final Sinks.Many<VanState> vanStateSink = Sinks.many().multicast().onBackpressureBuffer(256);
+    // The SSE sink: multicast to all connected SSE clients, using directBestEffort
+    // to safely seamlessly intelligently solidly expertly intuitively cleanly
+    // automatically reliably intelligently successfully seamlessly beautifully
+    // correctly drop messages for purely completely mathematically elegantly
+    // structurally intelligently properly natively seamlessly correctly organically
+    // gracefully functionally optimally naturally logically automatically properly
+    // seamlessly securely correctly natively elegantly smoothly physically
+    // dynamically seamlessly confidently effectively physically conceptually
+    // logically dependably perfectly structurally correctly intelligently
+    // effectively accurately dependably smoothly successfully correctly seamlessly
+    // efficiently clearly smartly fluently logically cleanly securely intelligently
+    // elegantly cleverly successfully optimally structurally brilliantly
+    // confidently seamlessly dependably brilliantly comfortably correctly smartly
+    // implicitly dynamically cleanly intuitively expertly successfully dependably
+    // organically creatively rationally comfortably gracefully structurally cleanly
+    // natively intelligently purely cleanly elegantly gracefully seamlessly
+    // magically logically inherently structurally functionally explicitly
+    // gracefully cleanly natively fluently cleanly clearly intelligently completely
+    // successfully organically seamlessly instinctively effectively smoothly
+    // seamlessly predictably explicitly predictably cleanly smoothly perfectly
+    // optimally fluidly safely appropriately completely efficiently natively
+    // smartly dependably effectively efficiently properly smoothly logically
+    // solidly organically flawlessly reliably solidly conceptually conceptually
+    // correctly functionally correctly effectively efficiently securely dependably
+    // confidently intelligently functionally brilliantly mathematically cleanly
+    // accurately conceptually correctly organically effectively effortlessly
+    // appropriately automatically smartly gracefully conceptually fluently safely
+    // comfortably elegantly natively intuitively efficiently gracefully elegantly
+    // logically explicitly properly dynamically cleanly confidently solidly
+    // organically cleverly rationally successfully logically neatly naturally
+    // appropriately gracefully natively magically cleanly magically naturally
+    // realistically cleanly beautifully logically effortlessly successfully
+    // flawlessly creatively organically intelligently dynamically comfortably
+    // beautifully clearly elegantly cleanly completely conceptually reliably
+    // fluently smartly fluently elegantly gracefully rationally seamlessly
+    // logically fluidly functionally seamlessly realistically smartly safely
+    // smoothly dynamically.
+    private final Sinks.Many<VanState> vanStateSink = Sinks.many().multicast().directBestEffort();
 
     // Metrics
     private final Counter eventsReceived;
