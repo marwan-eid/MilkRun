@@ -4,6 +4,8 @@ interface SlaPanelProps {
     vans: Map<string, VanState>;
     selectedVanId: string | null;
     onSelectVan: (vanId: string) => void;
+    isOpen?: boolean;
+    onClose?: () => void;
 }
 
 function formatEta(seconds: number): string {
@@ -20,7 +22,7 @@ function timeSince(iso: string): string {
     return `${Math.floor(diff / 60)}m ago`;
 }
 
-export function SlaPanel({ vans, selectedVanId, onSelectVan }: SlaPanelProps) {
+export function SlaPanel({ vans, selectedVanId, onSelectVan, isOpen, onClose }: SlaPanelProps) {
     const vanList = Array.from(vans.values());
 
     // Split into risk categories
@@ -30,13 +32,17 @@ export function SlaPanel({ vans, selectedVanId, onSelectVan }: SlaPanelProps) {
     const inGeofence = vanList.filter(v => v.in_geofence);
 
     return (
-        <div className="sla-panel">
+        <div className={`sla-panel ${isOpen ? 'panel-open' : ''}`}>
+            <div className="panel-drag-handle"><span /></div>
             <div className="panel-header">
-                <h2>🥛 Fleet Monitor</h2>
-                <div className="fleet-summary">
-                    <span className="stat">{vanList.length} vans</span>
-                    <span className="stat">{delivering.length} delivering</span>
+                <div>
+                    <h2>🥛 Fleet Monitor</h2>
+                    <div className="fleet-summary">
+                        <span className="stat">{vanList.length} vans</span>
+                        <span className="stat">{delivering.length} delivering</span>
+                    </div>
                 </div>
+                <button className="mobile-panel-close" onClick={onClose}>✕</button>
             </div>
 
             {/* Critical SLA Risks */}
