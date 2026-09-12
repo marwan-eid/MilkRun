@@ -20,6 +20,10 @@ export function useVanStream() {
     const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
     const reconnectDelayRef = useRef(1000);
 
+    // Performance optimization: Batch high-frequency SSE updates
+    const updatesBuffer = useRef<Map<string, VanState>>(new Map());
+    const batchIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+
     const connect = useCallback(() => {
         // Close existing connection
         if (eventSourceRef.current) {
@@ -29,15 +33,26 @@ export function useVanStream() {
         const es = new EventSource(`${API_BASE}/api/stream/vans`);
         eventSourceRef.current = es;
 
+        // Flush buffer at 15 FPS (every ~66ms) to prevent GC stutters
+        if (batchIntervalRef.current) clearInterval(batchIntervalRef.current);
+        batchIntervalRef.current = setInterval(() => {
+            if (updatesBuffer.current.size > 0) {
+                setVans(prev => {
+                    const next = new Map(prev);
+                    for (const [id, state] of updatesBuffer.current.entries()) {
+                        next.set(id, state);
+                    }
+                    return next;
+                });
+                updatesBuffer.current.clear();
+                setLastEvent(Date.now());
+            }
+        }, 66);
+
         es.addEventListener('van-update', (event: MessageEvent) => {
             try {
                 const vanState: VanState = JSON.parse(event.data);
-                setVans(prev => {
-                    const next = new Map(prev);
-                    next.set(vanState.van_id, vanState);
-                    return next;
-                });
-                setLastEvent(Date.now());
+                updatesBuffer.current.set(vanState.van_id, vanState);
             } catch (err) {
                 console.warn('Failed to parse van-update:', err);
             }
@@ -70,6 +85,9 @@ export function useVanStream() {
             eventSourceRef.current?.close();
             if (reconnectTimeoutRef.current) {
                 clearTimeout(reconnectTimeoutRef.current);
+            }
+            if (batchIntervalRef.current) {
+                clearInterval(batchIntervalRef.current);
             }
         };
     }, [connect]);
