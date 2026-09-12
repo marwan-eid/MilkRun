@@ -37,14 +37,20 @@ export function useVanStream() {
         if (batchIntervalRef.current) clearInterval(batchIntervalRef.current);
         batchIntervalRef.current = setInterval(() => {
             if (updatesBuffer.current.size > 0) {
+                // IMPORTANT: Extract the data BEFORE calling setVans, since the 
+                // setVans callback might be deferred by React rendering engine,
+                // and we're about to clear the buffer on the next line.
+                const pendingUpdates = Array.from(updatesBuffer.current.entries());
+                updatesBuffer.current.clear();
+
                 setVans(prev => {
                     const next = new Map(prev);
-                    for (const [id, state] of updatesBuffer.current.entries()) {
+                    for (const [id, state] of pendingUpdates) {
                         next.set(id, state);
                     }
                     return next;
                 });
-                updatesBuffer.current.clear();
+
                 setLastEvent(Date.now());
             }
         }, 66);
