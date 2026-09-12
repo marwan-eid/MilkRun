@@ -12,7 +12,12 @@ export default function App() {
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [panelOpen, setPanelOpen] = useState(false);
 
-  const criticalCount = Array.from(vans.values()).filter(v => v.sla_risk === 'CRITICAL').length;
+  let criticalCount = 0;
+  for (const v of vans.values()) {
+    if (v.sla_risk === 'CRITICAL') {
+      criticalCount++;
+    }
+  }
 
   return (
     <div className="app">
