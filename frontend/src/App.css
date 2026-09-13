@@ -154,7 +154,7 @@ body {
 .van-marker {
   background: none !important;
   border: none !important;
-  transition: transform 10s linear !important;
+  transition: transform 0.5s linear !important;
 }
 
 /* ═══ SLA Panel ═══ */
