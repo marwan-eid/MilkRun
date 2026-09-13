@@ -147,8 +147,12 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
     const runId = Math.floor(Date.now() / 1000).toString();
     const routeId = `route-${today}-${vanId}-${runId}`;
 
-    // Pick 2-4 random neighborhoods for this van to service
-    const shuffled = [...NEIGHBORHOODS].sort(() => Math.random() - 0.5);
+    // Pick 2-4 random neighborhoods for this van to service rigorously relying on Fisher-Yates bounds
+    const shuffled = [...NEIGHBORHOODS];
+    for (let j = shuffled.length - 1; j > 0; j--) {
+        const r = Math.floor(Math.random() * (j + 1));
+        [shuffled[j], shuffled[r]] = [shuffled[r], shuffled[j]];
+    }
     const assignedNeighborhoods = shuffled.slice(0, 2 + Math.floor(Math.random() * 3));
 
     // Distribute stops across the selected neighborhoods
@@ -172,11 +176,16 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
         });
     }
 
-    // Pick the van's specific origin Micro-Hub based on its ID modulo
-    const originHub = HUBS[vanIndex % HUBS.length];
+    // Pick the van's base macro origin Micro-Hub based on its natively grouped module
+    const baseHub = HUBS[vanIndex % HUBS.length];
 
-    // Build dense waypoints via OSRM: HUB → stop[0] → stop[1] → ... → stop[n] → HUB
-    const allPoints: Waypoint[] = [originHub, ...stops.map((s) => s.location), originHub];
+    // Organically scatter the starting coordinate by ~1.5km mapping so clustered vans never bottleneck 
+    // down identically constrained street paths natively across the OSRM engine pipelines.
+    const originHub = scatterPoint(baseHub, 0.015);
+    const returningHub = scatterPoint(baseHub, 0.015);
+
+    // Build dense waypoints via OSRM uniformly: Scattered Park → stop[0] → stop[1] → ... → stop[n] → Scattered Return
+    const allPoints: Waypoint[] = [originHub, ...stops.map((s) => s.location), returningHub];
 
     // Fetch real geography streets polyline
     const waypoints = await fetchOsrmRoute(allPoints);

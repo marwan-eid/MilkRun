@@ -13,6 +13,15 @@ export class DispatchConsumer {
             brokers
         });
         this.consumer = this.kafka.consumer({ groupId: 'simulator-dispatch-group' });
+
+        // Trap KafkaJS consumer death and intentionally panic the process
+        // This leverages Docker's restart policy to automatically self-heal the container 
+        // instead of silently losing the ability to intercept ad-hoc map clicks forever.
+        this.consumer.on(this.consumer.events.CRASH, e => {
+            console.error('💥 [DISPATCH DAEMON] Fatal Kafka Consumer crash detected. Forcing container restart...', e);
+            process.exit(1);
+        });
+
         this.simulators = simulators;
     }
 
