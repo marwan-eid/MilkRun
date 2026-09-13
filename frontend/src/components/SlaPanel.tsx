@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import type { VanState } from '../types/van';
 
 interface SlaPanelProps {
@@ -116,7 +117,7 @@ interface VanCardProps {
     onClick: (vanId: string) => void;
 }
 
-function VanCard({ van, isSelected, onClick }: VanCardProps) {
+const VanCard = memo(function VanCard({ van, isSelected, onClick }: VanCardProps) {
     const statusColors: Record<string, string> = {
         EN_ROUTE: '#3b82f6',
         DELIVERING: '#10b981',
@@ -165,4 +166,4 @@ function VanCard({ van, isSelected, onClick }: VanCardProps) {
             </div>
         </div>
     );
-}
+});

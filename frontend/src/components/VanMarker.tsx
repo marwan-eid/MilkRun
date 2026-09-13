@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import { Marker, Popup, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
 import type { VanState, SlaRisk, VanStatus } from '../types/van';
@@ -52,13 +53,13 @@ function formatEta(seconds: number): string {
     return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
-export function VanMarker({ van, isSelected, onClick }: VanMarkerProps) {
-    const icon = createVanIcon(
+export const VanMarker = memo(function VanMarker({ van, isSelected, onClick }: VanMarkerProps) {
+    const icon = useMemo(() => createVanIcon(
         getMarkerColor(van.status, van.sla_risk),
         van.heading_degrees,
         isSelected,
         van.in_geofence,
-    );
+    ), [van.status, van.sla_risk, van.heading_degrees, isSelected, van.in_geofence]);
 
     return (
         <Marker
@@ -108,4 +109,4 @@ export function VanMarker({ van, isSelected, onClick }: VanMarkerProps) {
             </Popup>
         </Marker>
     );
-}
+});
