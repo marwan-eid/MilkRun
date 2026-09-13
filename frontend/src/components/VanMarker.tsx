@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useRef, useEffect } from 'react';
 import { Marker, Popup, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
 import type { VanState, SlaRisk, VanStatus } from '../types/van';
@@ -24,7 +24,7 @@ function getMarkerColor(status: VanStatus, slaRisk: SlaRisk): string {
 }
 
 /** Create a custom SVG van icon with rotation and color */
-function createVanIcon(color: string, heading: number, isSelected: boolean, inGeofence: boolean): L.DivIcon {
+function createVanIcon(color: string, isSelected: boolean, inGeofence: boolean): L.DivIcon {
     const size = isSelected ? 28 : 20;
     const ring = isSelected ? `<circle cx="14" cy="14" r="13" fill="none" stroke="white" stroke-width="2"/>` : '';
     const geofenceRing = inGeofence ? `<circle cx="14" cy="14" r="16" fill="none" stroke="${color}" stroke-width="1" stroke-dasharray="3,2" opacity="0.6"/>` : '';
@@ -35,7 +35,7 @@ function createVanIcon(color: string, heading: number, isSelected: boolean, inGe
         iconAnchor: [(size + 8) / 2, (size + 8) / 2],
         html: `
       <svg width="${size + 8}" height="${size + 8}" viewBox="0 0 28 28"
-           style="transform: rotate(${heading}deg); transition: transform 0.3s ease;">
+           style="transition: transform 0.3s ease;">
         ${geofenceRing}
         ${ring}
         <circle cx="14" cy="14" r="${size / 2}" fill="${color}" opacity="0.9"/>
@@ -54,15 +54,29 @@ function formatEta(seconds: number): string {
 }
 
 export const VanMarker = memo(function VanMarker({ van, isSelected, onClick }: VanMarkerProps) {
+    const markerRef = useRef<L.Marker>(null);
+
     const icon = useMemo(() => createVanIcon(
         getMarkerColor(van.status, van.sla_risk),
-        van.heading_degrees,
         isSelected,
         van.in_geofence,
-    ), [van.status, van.sla_risk, van.heading_degrees, isSelected, van.in_geofence]);
+    ), [van.status, van.sla_risk, isSelected, van.in_geofence]);
+
+    useEffect(() => {
+        if (markerRef.current) {
+            const el = markerRef.current.getElement();
+            if (el) {
+                const svg = el.querySelector('svg');
+                if (svg) {
+                    svg.style.transform = `rotate(${van.heading_degrees}deg)`;
+                }
+            }
+        }
+    }, [van.heading_degrees, icon]);
 
     return (
         <Marker
+            ref={markerRef}
             position={[van.location.latitude, van.location.longitude]}
             icon={icon}
             eventHandlers={{ click: () => onClick(van.van_id) }}
