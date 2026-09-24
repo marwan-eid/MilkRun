@@ -18,6 +18,16 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Implementation: Simple hash-based Bloom filter per van using BitSet.
  * In production, you'd use Guava's BloomFilter or a Redis-backed solution.
+ *
+ * Each van keeps two generations of filter. Lookups check both; inserts go
+ * into the current one. When the current generation reaches its designed
+ * capacity (expectedInsertions), it becomes the previous generation and a
+ * fresh one takes its place. Without this, a long-running pipeline keeps
+ * setting bits until nearly every new event looks like a duplicate: at two
+ * pings a second a van passes 100k insertions in under 14 hours. With it,
+ * memory stays bounded, the false-positive rate stays near the configured
+ * target, and retries are still caught as long as they arrive within the
+ * last expectedInsertions events (they arrive within seconds in practice).
  */
 @Component
 public class BloomFilterDedup {
@@ -27,9 +37,17 @@ public class BloomFilterDedup {
     private final int expectedInsertions;
     private final int bitSetSize;
     private final int numHashFunctions;
-    private final ConcurrentHashMap<String, BitSet> vanFilters = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, VanFilter> vanFilters = new ConcurrentHashMap<>();
     private final AtomicLong duplicatesRejected = new AtomicLong(0);
     private final AtomicLong totalChecked = new AtomicLong(0);
+    private final AtomicLong rotations = new AtomicLong(0);
+
+    /** Two-generation filter for one van. Guarded by its own monitor. */
+    private final class VanFilter {
+        private BitSet current = new BitSet(bitSetSize);
+        private BitSet previous = null;
+        private int insertionsInCurrent = 0;
+    }
 
     public BloomFilterDedup(
             @Value("${milkrun.pipeline.dedup-expected-insertions:100000}") int expectedInsertions,
@@ -49,20 +67,13 @@ public class BloomFilterDedup {
      */
     public boolean isDuplicate(String vanId, long sequenceNumber) {
         totalChecked.incrementAndGet();
-        BitSet filter = vanFilters.computeIfAbsent(vanId, k -> new BitSet(bitSetSize));
+        VanFilter filter = vanFilters.computeIfAbsent(vanId, k -> new VanFilter());
         String key = vanId + ":" + sequenceNumber;
 
         synchronized (filter) {
-            boolean allSet = true;
             int[] hashes = computeHashes(key);
 
-            for (int hash : hashes) {
-                if (!filter.get(hash)) {
-                    allSet = false;
-                }
-            }
-
-            if (allSet) {
+            if (allSet(filter.current, hashes) || (filter.previous != null && allSet(filter.previous, hashes))) {
                 duplicatesRejected.incrementAndGet();
                 log.debug("Duplicate rejected: van={}, seq={}", vanId, sequenceNumber);
                 return true;
@@ -70,10 +81,28 @@ public class BloomFilterDedup {
 
             // Mark as seen
             for (int hash : hashes) {
-                filter.set(hash);
+                filter.current.set(hash);
+            }
+
+            // Rotate before the current generation exceeds its designed capacity.
+            if (++filter.insertionsInCurrent >= expectedInsertions) {
+                filter.previous = filter.current;
+                filter.current = new BitSet(bitSetSize);
+                filter.insertionsInCurrent = 0;
+                rotations.incrementAndGet();
+                log.debug("Rotated dedup filter generation for van={}", vanId);
             }
             return false;
         }
+    }
+
+    private static boolean allSet(BitSet bits, int[] hashes) {
+        for (int hash : hashes) {
+            if (!bits.get(hash)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -106,5 +135,10 @@ public class BloomFilterDedup {
 
     public long getTotalChecked() {
         return totalChecked.get();
+    }
+
+    /** Number of filter generations rotated out across all vans. */
+    public long getRotations() {
+        return rotations.get();
     }
 }
