@@ -63,4 +63,37 @@ class BloomFilterDedupTest {
             assertTrue(dedup.isDuplicate("van-001", i));
         }
     }
+
+    @Test
+    void shouldNotSaturateUnderSustainedLoad() {
+        // Sized for 1,000 insertions; feed it 50x that. A filter that never
+        // rotates ends up rejecting nearly every new event.
+        BloomFilterDedup dedup = new BloomFilterDedup(1000, 0.01);
+        int falsePositives = 0;
+        int total = 50_000;
+
+        for (int i = 0; i < total; i++) {
+            if (dedup.isDuplicate("van-001", i)) {
+                falsePositives++;
+            }
+        }
+
+        // Two live generations → roughly 2x the configured 1% at worst.
+        assertTrue(falsePositives < total * 0.04, "Filter saturated: " + falsePositives + " false positives");
+        assertTrue(dedup.getRotations() >= 45, "Expected ~50 rotations, got " + dedup.getRotations());
+    }
+
+    @Test
+    void shouldStillCatchRecentDuplicatesAcrossRotation() {
+        BloomFilterDedup dedup = new BloomFilterDedup(1000, 0.01);
+
+        // 1,500 events: seq 0..999 rotate into the previous generation,
+        // seq 1000..1499 are in the current one.
+        for (int i = 0; i < 1500; i++) {
+            dedup.isDuplicate("van-001", i);
+        }
+
+        assertTrue(dedup.isDuplicate("van-001", 1200), "Duplicate in current generation must be caught");
+        assertTrue(dedup.isDuplicate("van-001", 500), "Duplicate in previous generation must be caught");
+    }
 }
