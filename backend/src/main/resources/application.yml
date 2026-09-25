@@ -55,6 +55,9 @@ management:
   metrics:
     tags:
       application: milkrun
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
 
 server:
   port: 8080

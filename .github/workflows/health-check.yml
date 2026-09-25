@@ -1,0 +1,55 @@
+name: Live demo health
+
+# Probes the public demo every 15 minutes. A failed run is the alert: GitHub
+# emails the person who last changed this schedule. Note that GitHub pauses
+# scheduled workflows in repositories with no activity for 60 days.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DEMO_URL: ${{ vars.DEMO_URL || 'https://marwan-milkrun.duckdns.org' }}
+    steps:
+      - name: Pipeline health over the last 5 minutes
+        run: |
+          fetch() { curl -fsS --max-time 20 --retry 3 --retry-delay 10 "$DEMO_URL/api/observability/health"; }
+          body="$(fetch)"
+          status="$(jq -r '.status // empty' <<<"$body")"
+
+          if [ -n "$status" ]; then
+            jq '{status, window}' <<<"$body"
+            if [ "$status" = "DEGRADED" ]; then
+              echo "::error::Pipeline is DEGRADED: $(jq -r '.window.problems | join("; ")' <<<"$body")"
+              exit 1
+            fi
+          else
+            # Backends older than the rolling window: compare two samples a minute apart.
+            sleep 60
+            later="$(fetch)"
+            checked=$(( $(jq '.pipeline.dedup_total_checked' <<<"$later") - $(jq '.pipeline.dedup_total_checked' <<<"$body") ))
+            rejected=$(( $(jq '.pipeline.dedup_rejected' <<<"$later") - $(jq '.pipeline.dedup_rejected' <<<"$body") ))
+            echo "last 60 s: checked=$checked rejected=$rejected"
+            if [ "$checked" -le 0 ]; then
+              echo "::error::No GPS events processed in the last minute"
+              exit 1
+            fi
+            if [ $(( rejected * 100 / checked )) -gt 20 ]; then
+              echo "::error::Dedup rejected $(( rejected * 100 / checked ))% of events in the last minute"
+              exit 1
+            fi
+          fi
+
+      - name: Vans are visible
+        run: |
+          count="$(curl -fsS --max-time 20 --retry 3 --retry-delay 10 "$DEMO_URL/api/vans" | jq 'length')"
+          echo "vans: $count"
+          [ "$count" -gt 0 ] || { echo "::error::/api/vans returned no vans"; exit 1; }

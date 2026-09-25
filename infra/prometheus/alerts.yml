@@ -1,0 +1,51 @@
+groups:
+  - name: milkrun-pipeline
+    rules:
+      - alert: MilkRunBackendDown
+        expr: up{job="milkrun-backend"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "MilkRun backend is not being scraped"
+          description: "Prometheus has not reached /actuator/prometheus for 2 minutes."
+
+      - alert: MilkRunDedupRejectionRateHigh
+        # The simulator duplicates ~7% of pings. A much higher share means the
+        # dedup stage is rejecting real events (e.g. a saturated filter).
+        expr: |
+          sum(rate(milkrun_events_deduplicated_total[5m]))
+            / sum(rate(milkrun_events_received_total[5m])) > 0.20
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Dedup is rejecting {{ $value | humanizePercentage }} of GPS events"
+          description: "Expected ~7%. Real events are being dropped before they reach the map."
+
+      - alert: MilkRunGpsStreamStalled
+        expr: sum(rate(milkrun_events_received_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No GPS events received for 5 minutes"
+          description: "The simulator, Kafka or the consumer has stopped."
+
+      - alert: MilkRunEventsNotProcessed
+        expr: |
+          sum(rate(milkrun_events_received_total[5m])) > 0
+            and sum(rate(milkrun_events_processed_total[5m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "GPS events arrive but none reach the map"
+
+      - alert: MilkRunDeserializationErrors
+        expr: sum(rate(milkrun_events_deserialization_errors_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Malformed GPS events on the gps-events topic"

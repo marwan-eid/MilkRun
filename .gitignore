@@ -40,3 +40,6 @@ postgres-data/
 *.pem
 id_rsa*
 id_ed25519*
+
+# Written on the VM by scripts/deploy-remote.sh
+.deployed-tag

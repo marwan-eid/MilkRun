@@ -2,9 +2,11 @@ package com.milkrun.api;
 
 import com.milkrun.calcite.AnalyticsService;
 import com.milkrun.engine.EtaEngine;
+import com.milkrun.observability.PipelineHealthMonitor;
 import com.milkrun.pipeline.BloomFilterDedup;
-import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.lang.management.ManagementFactory;
@@ -13,10 +15,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Comprehensive observability endpoint for monitoring and health checks.
+ * Health snapshot for dashboards and external checks.
  *
- * Aggregates metrics from all pipeline stages into a single snapshot.
- * This is the go-to endpoint for SRE dashboards and alerting.
+ * "status" reflects the last few minutes of pipeline traffic (see
+ * {@link PipelineHealthMonitor}); the lifetime counters are kept for context.
  */
 @RestController
 @RequestMapping("/api/observability")
@@ -25,7 +27,7 @@ public class ObservabilityController {
     private final EtaEngine etaEngine;
     private final BloomFilterDedup dedup;
     private final AnalyticsService analyticsService;
-    private final MeterRegistry meterRegistry;
+    private final PipelineHealthMonitor healthMonitor;
 
     @Value("${spring.application.name:milkrun-backend}")
     private String appName;
@@ -34,28 +36,25 @@ public class ObservabilityController {
             EtaEngine etaEngine,
             BloomFilterDedup dedup,
             AnalyticsService analyticsService,
-            MeterRegistry meterRegistry) {
+            PipelineHealthMonitor healthMonitor) {
         this.etaEngine = etaEngine;
         this.dedup = dedup;
         this.analyticsService = analyticsService;
-        this.meterRegistry = meterRegistry;
+        this.healthMonitor = healthMonitor;
     }
 
-    /**
-     * Full system health snapshot — for SRE dashboards and alerting.
-     */
     @GetMapping("/health")
     public Map<String, Object> systemHealth() {
+        PipelineHealthMonitor.Report window = healthMonitor.report();
         Map<String, Object> health = new LinkedHashMap<>();
 
-        // Runtime
         health.put("service", appName);
+        health.put("status", window.status().name());
         health.put("timestamp", Instant.now().toString());
         health.put("uptime_seconds", ManagementFactory.getRuntimeMXBean().getUptime() / 1000);
         health.put("java_version", System.getProperty("java.version"));
         health.put("graalvm", System.getProperty("org.graalvm.nativeimage.imagecode") != null);
 
-        // Memory
         Runtime rt = Runtime.getRuntime();
         Map<String, Object> memory = new LinkedHashMap<>();
         memory.put("heap_used_mb", (rt.totalMemory() - rt.freeMemory()) / (1024 * 1024));
@@ -64,7 +63,7 @@ public class ObservabilityController {
                 Math.round((double) (rt.totalMemory() - rt.freeMemory()) / rt.maxMemory() * 100));
         health.put("memory", memory);
 
-        // Pipeline
+        // Lifetime counters since the process started
         Map<String, Object> pipeline = new LinkedHashMap<>();
         pipeline.put("active_vans", etaEngine.getAllVanStates().size());
         pipeline.put("dedup_total_checked", dedup.getTotalChecked());
@@ -75,10 +74,11 @@ public class ObservabilityController {
                         : 0);
         health.put("pipeline", pipeline);
 
-        // Calcite
+        // Rates over the recent window: what alerts should look at
+        health.put("window", window.toMap());
+
         health.put("calcite_ready", analyticsService.isReady());
 
-        // Thread pool
         Map<String, Object> threads = new LinkedHashMap<>();
         threads.put("active_count", Thread.activeCount());
         threads.put("available_processors", rt.availableProcessors());
@@ -87,25 +87,22 @@ public class ObservabilityController {
         return health;
     }
 
-    /**
-     * Liveness probe (for Kubernetes).
-     */
+    /** Liveness probe: the process is up and serving HTTP. */
     @GetMapping("/live")
     public Map<String, String> liveness() {
         return Map.of("status", "UP");
     }
 
-    /**
-     * Readiness probe — checks that Kafka pipeline and DB are connected.
-     */
+    /** Readiness probe: 503 until the analytics layer can serve queries. */
     @GetMapping("/ready")
-    public Map<String, Object> readiness() {
-        boolean pipelineActive = etaEngine.getAllVanStates().size() >= 0; // Always true if started
+    public ResponseEntity<Map<String, Object>> readiness() {
         boolean calciteReady = analyticsService.isReady();
-
-        return Map.of(
-                "status", pipelineActive ? "READY" : "NOT_READY",
-                "kafka_consumer", "CONNECTED",
-                "calcite", calciteReady ? "READY" : "INITIALIZING");
+        PipelineHealthMonitor.Report window = healthMonitor.report();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", calciteReady ? "READY" : "NOT_READY");
+        body.put("calcite", calciteReady ? "READY" : "INITIALIZING");
+        body.put("gps_stream", window.processed() > 0 ? "RECEIVING" : "IDLE");
+        body.put("pipeline_status", window.status().name());
+        return ResponseEntity.status(calciteReady ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE).body(body);
     }
 }

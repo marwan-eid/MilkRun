@@ -52,6 +52,7 @@ services:
   #   Application: Java Spring Boot engine
   # ==========================================
   backend:
+    image: ${MILKRUN_IMAGE_REGISTRY:-ghcr.io/marwan-eid}/milkrun-backend:${MILKRUN_IMAGE_TAG:-latest}
     build:
       context: ./backend
     depends_on:
@@ -71,6 +72,7 @@ services:
   #   Application: fleet simulator
   # ==========================================
   simulator:
+    image: ${MILKRUN_IMAGE_REGISTRY:-ghcr.io/marwan-eid}/milkrun-simulator:${MILKRUN_IMAGE_TAG:-latest}
     build:
       context: ./simulator
     depends_on:
@@ -87,6 +89,7 @@ services:
   #   Application: React build served by nginx (proxies /api)
   # ==========================================
   frontend:
+    image: ${MILKRUN_IMAGE_REGISTRY:-ghcr.io/marwan-eid}/milkrun-frontend:${MILKRUN_IMAGE_TAG:-latest}
     build:
       context: ./frontend
     depends_on:
@@ -111,7 +114,46 @@ services:
     depends_on:
       - frontend
 
+  # ==========================================
+  #   Monitoring (opt-in): docker compose --profile monitoring up -d
+  #   Bound to localhost only; reach it with an SSH tunnel, e.g.
+  #   ssh -L 9090:localhost:9090 -L 3001:localhost:3001 <vm>
+  # ==========================================
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    profiles: [ "monitoring" ]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.prod.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    profiles: [ "monitoring" ]
+    ports:
+      - "127.0.0.1:3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-change-me}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   postgres-data:
   caddy_data:
   caddy_config:
+  prometheus-data:
+  grafana-data:
