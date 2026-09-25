@@ -1,0 +1,14 @@
+# Several backend instances behind the frontend's nginx:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.scale.yml up -d --scale backend=2
+#
+# Kafka splits the gps-events and delivery-events partitions between the
+# instances; each publishes the states of its own vans to the van-state topic
+# and replicates everyone else's from it, so any instance serves the whole
+# fleet (SSE, /api/vans, dispatch, analytics). nginx resolves "backend" to all
+# instances when it starts and round-robins between them.
+# scripts/scale-demo.sh runs this and checks the behaviour.
+services:
+  backend:
+    environment:
+      - MILKRUN_FANOUT_MODE=kafka

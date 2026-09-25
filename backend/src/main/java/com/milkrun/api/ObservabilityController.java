@@ -2,7 +2,7 @@ package com.milkrun.api;
 
 import com.milkrun.calcite.AnalyticsService;
 import com.milkrun.consumer.GpsEventPipeline;
-import com.milkrun.engine.EtaEngine;
+import com.milkrun.fleet.FleetView;
 import com.milkrun.observability.PipelineHealthMonitor;
 import com.milkrun.pipeline.Deduplicator;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,7 +25,7 @@ import java.util.Map;
 @RequestMapping("/api/observability")
 public class ObservabilityController {
 
-    private final EtaEngine etaEngine;
+    private final FleetView fleet;
     private final Deduplicator dedup;
     private final AnalyticsService analyticsService;
     private final PipelineHealthMonitor healthMonitor;
@@ -35,12 +35,12 @@ public class ObservabilityController {
     private String appName;
 
     public ObservabilityController(
-            EtaEngine etaEngine,
+            FleetView fleet,
             Deduplicator dedup,
             AnalyticsService analyticsService,
             PipelineHealthMonitor healthMonitor,
             GpsEventPipeline gpsPipeline) {
-        this.etaEngine = etaEngine;
+        this.fleet = fleet;
         this.dedup = dedup;
         this.analyticsService = analyticsService;
         this.healthMonitor = healthMonitor;
@@ -69,7 +69,7 @@ public class ObservabilityController {
 
         // Lifetime counters since the process started
         Map<String, Object> pipeline = new LinkedHashMap<>();
-        pipeline.put("active_vans", etaEngine.getAllVanStates().size());
+        pipeline.put("active_vans", fleet.all().size());
         pipeline.put("dedup_strategy", dedup.strategy());
         pipeline.put("dedup_total_checked", dedup.getTotalChecked());
         pipeline.put("dedup_rejected", dedup.getDuplicatesRejected());

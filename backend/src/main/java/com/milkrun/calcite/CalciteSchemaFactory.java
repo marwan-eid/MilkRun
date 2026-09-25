@@ -1,6 +1,6 @@
 package com.milkrun.calcite;
 
-import com.milkrun.engine.EtaEngine;
+import com.milkrun.fleet.FleetView;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import jakarta.annotation.PreDestroy;
@@ -62,12 +62,12 @@ public class CalciteSchemaFactory {
 
     @Autowired
     public CalciteSchemaFactory(
-            EtaEngine etaEngine,
+            FleetView fleet,
             @Value("${spring.r2dbc.url}") String r2dbcUrl,
             @Value("${spring.r2dbc.username}") String username,
             @Value("${spring.r2dbc.password}") String password) {
         this(pooledDataSource(toJdbcUrl(r2dbcUrl), username, password),
-                new LiveVanTable(() -> etaEngine.getAllVanStates().values()), true);
+                new LiveVanTable(fleet::all), true);
     }
 
     /** For tests: any data source and live table. */

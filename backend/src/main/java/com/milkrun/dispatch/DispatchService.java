@@ -1,6 +1,7 @@
 package com.milkrun.dispatch;
 
 import com.milkrun.engine.EtaEngine;
+import com.milkrun.fleet.FleetView;
 import com.milkrun.engine.RouteGeometry;
 import com.milkrun.engine.RoutePlanStore;
 import com.milkrun.model.Location;
@@ -36,6 +37,7 @@ public class DispatchService implements DispatchPlanner {
 
     private final RoutePlanStore plans;
     private final EtaEngine etaEngine;
+    private final FleetView fleet;
     private final Clock clock;
     private final double detourFactor;
     private final double slotSimSeconds;
@@ -43,18 +45,19 @@ public class DispatchService implements DispatchPlanner {
     private final double latePenaltyKm;
 
     @Autowired
-    public DispatchService(RoutePlanStore plans, EtaEngine etaEngine,
+    public DispatchService(RoutePlanStore plans, EtaEngine etaEngine, FleetView fleet,
             @Value("${milkrun.eta.detour-factor:1.3}") double detourFactor,
             @Value("${milkrun.dispatch.slot-sim-seconds:1200}") double slotSimSeconds,
             @Value("${milkrun.dispatch.dwell-sim-seconds:40}") double dwellSimSeconds,
             @Value("${milkrun.dispatch.late-penalty-km:5}") double latePenaltyKm) {
-        this(plans, etaEngine, Clock.systemUTC(), detourFactor, slotSimSeconds, dwellSimSeconds, latePenaltyKm);
+        this(plans, etaEngine, fleet, Clock.systemUTC(), detourFactor, slotSimSeconds, dwellSimSeconds, latePenaltyKm);
     }
 
-    DispatchService(RoutePlanStore plans, EtaEngine etaEngine, Clock clock, double detourFactor,
+    DispatchService(RoutePlanStore plans, EtaEngine etaEngine, FleetView fleet, Clock clock, double detourFactor,
             double slotSimSeconds, double dwellSimSeconds, double latePenaltyKm) {
         this.plans = plans;
         this.etaEngine = etaEngine;
+        this.fleet = fleet;
         this.clock = clock;
         this.detourFactor = detourFactor;
         this.slotSimSeconds = slotSimSeconds;
@@ -72,7 +75,7 @@ public class DispatchService implements DispatchPlanner {
         Option best = null;
         int considered = 0;
 
-        for (VanState van : etaEngine.getAllVanStates().values()) {
+        for (VanState van : fleet.all()) {
             if (van.status() != VanStatus.EN_ROUTE && van.status() != VanStatus.DELIVERING) {
                 continue;
             }

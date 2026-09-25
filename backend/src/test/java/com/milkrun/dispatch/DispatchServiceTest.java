@@ -4,18 +4,22 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.milkrun.engine.EtaEngine;
 import com.milkrun.engine.GeofenceDetector;
 import com.milkrun.engine.RoutePlanStore;
+import com.milkrun.fleet.FleetView;
 import com.milkrun.model.GpsEvent;
 import com.milkrun.model.Location;
 import com.milkrun.model.RoutePlan;
+import com.milkrun.model.VanState;
 import com.milkrun.model.VanStatus;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
 
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -38,7 +42,12 @@ class DispatchServiceTest {
         GeofenceDetector zones = GeofenceDetector.withZones(List.of());
         store = new RoutePlanStore(new ObjectMapper().findAndRegisterModules(), zones, null, registry, "x", "route-plans");
         eta = new EtaEngine(CircuitBreaker.ofDefaults("eta"), zones, store, registry, 60, 0, 1.3, 200);
-        dispatch = new DispatchService(store, eta, Clock.fixed(T0, ZoneOffset.UTC), 1.3, 1200, 40, 5);
+        FleetView fleet = new FleetView() {
+            public Collection<VanState> all() { return eta.getAllVanStates().values(); }
+            public Optional<VanState> get(String id) { return Optional.ofNullable(eta.getAllVanStates().get(id)); }
+            public Flux<VanState> updates() { return Flux.empty(); }
+        };
+        dispatch = new DispatchService(store, eta, fleet, Clock.fixed(T0, ZoneOffset.UTC), 1.3, 1200, 40, 5);
     }
 
     /**

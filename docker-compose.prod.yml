@@ -83,7 +83,7 @@ services:
         condition: service_started
     environment:
       - KAFKA_BROKERS=kafka:9092
-      - VAN_COUNT=50
+      - VAN_COUNT=${VAN_COUNT:-50}
     restart: on-failure
 
   # ==========================================

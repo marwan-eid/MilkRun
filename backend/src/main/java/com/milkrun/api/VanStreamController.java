@@ -1,9 +1,9 @@
 package com.milkrun.api;
 
-import com.milkrun.consumer.GpsEventPipeline;
-import com.milkrun.engine.EtaEngine;
+import com.milkrun.fleet.FleetView;
 import com.milkrun.model.VanState;
 import com.milkrun.pipeline.Deduplicator;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -14,81 +14,68 @@ import java.util.Collection;
 import java.util.Map;
 
 /**
- * REST + SSE controller for the Milk-Run frontend.
+ * REST + SSE endpoints for the dashboard.
  *
- * Endpoints:
- * - GET /api/stream/vans          → SSE stream of VanState updates
- * - GET /api/vans                 → Current state of all vans (snapshot)
- * - GET /api/vans/{vanId}         → Current state of a specific van
- * - GET /api/health/pipeline      → Pipeline health metrics
+ * - GET /api/stream/vans          SSE stream of van state updates
+ * - GET /api/vans                 current state of all vans (snapshot)
+ * - GET /api/vans/{vanId}         current state of one van
+ * - GET /api/health/pipeline      pipeline counters
+ *
+ * Reads the {@link FleetView}, so with several backend instances each one
+ * serves the whole fleet.
  */
 @RestController
 @RequestMapping("/api")
 public class VanStreamController {
 
-    private final GpsEventPipeline pipeline;
-    private final EtaEngine etaEngine;
+    private final FleetView fleet;
     private final Deduplicator dedup;
+    private final Duration sampleInterval;
 
-    public VanStreamController(GpsEventPipeline pipeline, EtaEngine etaEngine, Deduplicator dedup) {
-        this.pipeline = pipeline;
-        this.etaEngine = etaEngine;
+    public VanStreamController(FleetView fleet, Deduplicator dedup,
+            @Value("${milkrun.backpressure.sample-interval-ms:500}") long sampleIntervalMs) {
+        this.fleet = fleet;
         this.dedup = dedup;
+        this.sampleInterval = Duration.ofMillis(sampleIntervalMs);
     }
 
     /**
-     * Server-Sent Events stream of van state updates.
-     * Backpressure-sampled: max 2 updates/sec per van.
+     * Server-Sent Events stream of van state updates, at most one per van per
+     * sample interval, with a heartbeat every 15 seconds.
      *
      * Frontend connects via EventSource API:
      *   const source = new EventSource('/api/stream/vans');
-     *   source.onmessage = (e) => updateMap(JSON.parse(e.data));
+     *   source.addEventListener('van-update', (e) => updateMap(JSON.parse(e.data)));
      */
     @GetMapping(value = "/stream/vans", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<VanState>> streamVanUpdates() {
-        return pipeline.vanStateStream()
+        return fleet.sampledUpdates(sampleInterval)
                 .map(state -> ServerSentEvent.<VanState>builder()
                         .id(state.vanId() + "-" + state.lastUpdated().toEpochMilli())
                         .event("van-update")
                         .data(state)
                         .build())
-                // Heartbeat every 15 seconds to keep connection alive
-                .mergeWith(
-                        Flux.interval(Duration.ofSeconds(15))
-                                .map(tick -> ServerSentEvent.<VanState>builder()
-                                        .event("heartbeat")
-                                        .comment("keepalive")
-                                        .build())
-                );
+                .mergeWith(Flux.interval(Duration.ofSeconds(15))
+                        .map(tick -> ServerSentEvent.<VanState>builder()
+                                .event("heartbeat")
+                                .comment("keepalive")
+                                .build()));
     }
 
-    /**
-     * Get current snapshot of all van states.
-     */
     @GetMapping("/vans")
     public Collection<VanState> getAllVans() {
-        return etaEngine.getAllVanStates().values();
+        return fleet.all();
     }
 
-    /**
-     * Get current state of a specific van.
-     */
     @GetMapping("/vans/{vanId}")
     public VanState getVan(@PathVariable String vanId) {
-        VanState state = etaEngine.getAllVanStates().get(vanId);
-        if (state == null) {
-            throw new VanNotFoundException(vanId);
-        }
-        return state;
+        return fleet.get(vanId).orElseThrow(() -> new VanNotFoundException(vanId));
     }
 
-    /**
-     * Pipeline health and metrics endpoint.
-     */
     @GetMapping("/health/pipeline")
     public Map<String, Object> pipelineHealth() {
         return Map.of(
-                "activeVans", etaEngine.getAllVanStates().size(),
+                "activeVans", fleet.all().size(),
                 "dedupChecked", dedup.getTotalChecked(),
                 "dedupRejected", dedup.getDuplicatesRejected(),
                 "status", "RUNNING"

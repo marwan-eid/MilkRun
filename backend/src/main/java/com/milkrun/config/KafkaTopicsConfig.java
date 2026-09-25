@@ -2,6 +2,7 @@ package com.milkrun.config;
 
 import org.apache.kafka.clients.admin.NewTopic;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.config.TopicBuilder;
@@ -41,6 +42,16 @@ public class KafkaTopicsConfig {
     @Bean
     NewTopic dispatchEventsTopic(@Value("${milkrun.kafka.dispatch-topic}") String name) {
         return TopicBuilder.name(name).partitions(1).replicas(1).build();
+    }
+
+    /** Shared van states for multi-instance deployments; a few minutes is plenty. */
+    @Bean
+    @ConditionalOnProperty(name = "milkrun.fanout.mode", havingValue = "kafka")
+    NewTopic vanStateTopic(@Value("${milkrun.kafka.van-state-topic}") String name) {
+        return TopicBuilder.name(name).partitions(VAN_PARTITIONS).replicas(1)
+                .config("retention.ms", "600000")
+                .config("segment.ms", "300000")
+                .build();
     }
 
     @Bean

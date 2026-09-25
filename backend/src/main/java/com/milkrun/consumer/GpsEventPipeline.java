@@ -69,7 +69,6 @@ public class GpsEventPipeline {
     private final GpsArchiveRepository archive;
     private final LateEventHandler lateEvents;
     private final KafkaDeadLetterPublisher kafkaDeadLetters;
-    private final long sampleIntervalMs;
     private final Duration releaseInterval;
     private final Scheduler releaseScheduler = Schedulers.newSingle("gps-release");
 
@@ -101,8 +100,7 @@ public class GpsEventPipeline {
             MeterRegistry meterRegistry,
             @Value("${milkrun.pipeline.reorder-buffer-grace-ms:3000}") long graceMs,
             @Value("${milkrun.pipeline.reorder-buffer-max-size:50}") int maxBufferSize,
-            @Value("${milkrun.pipeline.release-interval-ms:100}") long releaseIntervalMs,
-            @Value("${milkrun.backpressure.sample-interval-ms:500}") long sampleIntervalMs) {
+            @Value("${milkrun.pipeline.release-interval-ms:100}") long releaseIntervalMs) {
         this.kafkaReceiver = kafkaReceiver;
         this.objectMapper = objectMapper;
         this.dedup = dedup;
@@ -112,7 +110,6 @@ public class GpsEventPipeline {
         this.lateEvents = lateEvents;
         this.kafkaDeadLetters = kafkaDeadLetters;
         this.releaseInterval = Duration.ofMillis(releaseIntervalMs);
-        this.sampleIntervalMs = sampleIntervalMs;
 
         this.eventsReceived = Counter.builder("milkrun.events.received")
                 .description("GPS events received from Kafka").register(meterRegistry);
@@ -233,16 +230,6 @@ public class GpsEventPipeline {
             p.put("p" + Math.round(v.percentile() * 100), Math.round(v.value(TimeUnit.MILLISECONDS)));
         }
         return p;
-    }
-
-    /**
-     * Van states for SSE clients, sampled to at most one update per van per
-     * sample interval.
-     */
-    public Flux<VanState> vanStateStream() {
-        return vanStateSink.asFlux()
-                .groupBy(VanState::vanId)
-                .flatMap(group -> group.sample(Duration.ofMillis(sampleIntervalMs)));
     }
 
     /** Every van state as it is produced (unsampled). */
