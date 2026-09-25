@@ -1,32 +1,37 @@
-# React + TypeScript + Vite
+# MilkRun dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19 + TypeScript + Leaflet front end for the MilkRun fleet tracker.
 
-Currently, two official plugins are available:
+- **Live map**: every van as a marker coloured by SLA risk (red: projected to
+  miss its next delivery slot, amber: less than a minute to spare), rotated to
+  its heading, gliding between the twice-a-second updates.
+- **Fleet panel**: vans grouped by risk, with ETA to the next stop and slack
+  against its slot.
+- **Dispatch**: right-click (long-press on touch screens) anywhere to drop an
+  ad-hoc order. The backend picks the van and the position in its route; the
+  map shows its choice, the detour and the predicted arrival.
+- **Analytics**: Apache Calcite queries, including federated ones that join
+  the live fleet with delivery history in PostgreSQL.
+- **Header**: connection state, van count and end-to-end latency (device
+  reading to map, p50).
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Data flow
 
-## React Compiler
+`useVanStream` opens an `EventSource` on `/api/stream/vans`, loads a snapshot
+from `/api/vans` on every (re)connect, batches updates at ~15 fps, reconnects
+with exponential backoff and drops vans that have been silent for two minutes.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Development
 
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+npm install
+npm run dev        # http://localhost:5173, proxies /api to localhost:8080
+npm test           # Vitest (pure helpers in src/lib)
+npm run lint       # oxlint
+npm run build      # typecheck + production build
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Set `VITE_API_URL` to point the dashboard at a backend on another origin (the
+backend must allow that origin in `milkrun.cors.allowed-origins`). In the
+Docker image, nginx serves the build and proxies `/api` to the backend, so no
+CORS is involved.

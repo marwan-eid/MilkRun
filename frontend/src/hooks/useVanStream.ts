@@ -1,102 +1,98 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { VanState } from '../types/van';
+import { mergeUpdates, pruneSilent } from '../lib/fleet';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
+/** Updates are applied to React state at most this often (~15 fps). */
+const FLUSH_MS = 66;
+/** A van that has not reported for this long is removed from the map. */
+const SILENT_MS = 120_000;
 
 /**
- * React hook that consumes the backend's SSE stream and maintains
- * a real-time map of all van states.
+ * Subscribes to the backend's SSE stream and keeps a map of every van's latest state.
  *
- * Features:
- * - Auto-reconnect on connection loss (with exponential backoff)
- * - Tracks connection status for UI indicators
- * - Aggregates van states into a Map keyed by van_id
+ * - Loads a snapshot from /api/vans on every (re)connect, so the map is full
+ *   immediately instead of filling as vans report.
+ * - Batches updates and applies them at ~15 fps to keep rendering cheap.
+ * - Reconnects with exponential backoff (1 s up to 30 s).
+ * - Removes vans that have gone silent (e.g. after the simulator restarts).
  */
 export function useVanStream() {
     const [vans, setVans] = useState<Map<string, VanState>>(new Map());
     const [connected, setConnected] = useState(false);
     const [lastEvent, setLastEvent] = useState<number>(0);
-    const eventSourceRef = useRef<EventSource | null>(null);
-    const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-    const reconnectDelayRef = useRef(1000);
-
-    // Performance optimization: Batch high-frequency SSE updates
-    const updatesBuffer = useRef<Map<string, VanState>>(new Map());
-    const batchIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
-
-    const connect = useCallback(() => {
-        // Close existing connection
-        if (eventSourceRef.current) {
-            eventSourceRef.current.close();
-        }
-
-        const es = new EventSource(`${API_BASE}/api/stream/vans`);
-        eventSourceRef.current = es;
-
-        // Flush buffer at 15 FPS (every ~66ms) to prevent GC stutters
-        if (batchIntervalRef.current) clearInterval(batchIntervalRef.current);
-        batchIntervalRef.current = setInterval(() => {
-            if (updatesBuffer.current.size > 0) {
-                // IMPORTANT: Extract the data BEFORE calling setVans, since the 
-                // setVans callback might be deferred by React rendering engine,
-                // and we're about to clear the buffer on the next line.
-                const pendingUpdates = Array.from(updatesBuffer.current.entries());
-                updatesBuffer.current.clear();
-
-                setVans(prev => {
-                    const next = new Map(prev);
-                    for (const [id, state] of pendingUpdates) {
-                        next.set(id, state);
-                    }
-                    return next;
-                });
-
-                setLastEvent(Date.now());
-            }
-        }, 66);
-
-        es.addEventListener('van-update', (event: MessageEvent) => {
-            try {
-                const vanState: VanState = JSON.parse(event.data);
-                updatesBuffer.current.set(vanState.van_id, vanState);
-            } catch (err) {
-                console.warn('Failed to parse van-update:', err);
-            }
-        });
-
-        es.onopen = () => {
-            setConnected(true);
-            reconnectDelayRef.current = 1000; // Reset backoff
-            console.log('🔗 SSE connected');
-        };
-
-        es.onerror = () => {
-            setConnected(false);
-            es.close();
-
-            // Exponential backoff reconnect
-            const delay = reconnectDelayRef.current;
-            console.log(`🔌 SSE disconnected, reconnecting in ${delay}ms...`);
-
-            reconnectTimeoutRef.current = setTimeout(() => {
-                reconnectDelayRef.current = Math.min(delay * 2, 30000);
-                connect();
-            }, delay);
-        };
-    }, []);
+    const pending = useRef<Map<string, VanState>>(new Map());
+    const receivedAt = useRef<Map<string, number>>(new Map());
 
     useEffect(() => {
-        connect();
-        return () => {
-            eventSourceRef.current?.close();
-            if (reconnectTimeoutRef.current) {
-                clearTimeout(reconnectTimeoutRef.current);
-            }
-            if (batchIntervalRef.current) {
-                clearInterval(batchIntervalRef.current);
+        let source: EventSource | null = null;
+        let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+        let reconnectDelay = 1000;
+        let closed = false;
+
+        const enqueue = (van: VanState) => {
+            pending.current.set(van.van_id, van);
+            receivedAt.current.set(van.van_id, Date.now());
+        };
+
+        const loadSnapshot = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/api/vans`);
+                if (!res.ok) return;
+                const snapshot: VanState[] = await res.json();
+                snapshot.forEach((van) => {
+                    if (!pending.current.has(van.van_id)) enqueue(van);
+                });
+            } catch {
+                // The stream fills the map anyway
             }
         };
-    }, [connect]);
+
+        function connect() {
+            source?.close();
+            const es = new EventSource(`${API_BASE}/api/stream/vans`);
+            source = es;
+
+            es.addEventListener('van-update', (event: MessageEvent) => {
+                try {
+                    enqueue(JSON.parse(event.data));
+                } catch (err) {
+                    console.warn('Failed to parse van-update:', err);
+                }
+            });
+
+            es.onopen = () => {
+                setConnected(true);
+                reconnectDelay = 1000;
+                void loadSnapshot();
+            };
+
+            es.onerror = () => {
+                setConnected(false);
+                es.close();
+                if (closed) return;
+                const delay = reconnectDelay;
+                reconnectDelay = Math.min(delay * 2, 30_000);
+                reconnectTimer = setTimeout(connect, delay);
+            };
+        }
+
+        connect();
+        const flush = setInterval(() => {
+            const updates = Array.from(pending.current.values());
+            pending.current.clear();
+            const now = Date.now();
+            setVans((prev) => pruneSilent(mergeUpdates(prev, updates), receivedAt.current, now, SILENT_MS));
+            if (updates.length > 0) setLastEvent(now);
+        }, FLUSH_MS);
+
+        return () => {
+            closed = true;
+            source?.close();
+            clearTimeout(reconnectTimer);
+            clearInterval(flush);
+        };
+    }, []);
 
     return { vans, connected, lastEvent };
 }

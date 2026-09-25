@@ -3,6 +3,7 @@ import { Marker, Popup, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
 import type { VanState, SlaRisk, VanStatus } from '../types/van';
 import { formatEta, formatSlack } from '../lib/format';
+import { unwrapHeading } from '../lib/heading';
 
 interface VanMarkerProps {
     van: VanState;
@@ -55,16 +56,25 @@ export const VanMarker = memo(function VanMarker({ van, isSelected, onClick }: V
         van.in_geofence,
     ), [van.status, van.sla_risk, isSelected, van.in_geofence]);
 
+    // Rotation is applied to the existing DOM node (no re-render of the icon).
+    // The angle is kept continuous so the transition turns the short way.
+    const angleRef = useRef(van.heading_degrees);
     useEffect(() => {
-        if (markerRef.current) {
-            const el = markerRef.current.getElement();
-            if (el) {
-                const svg = el.querySelector('svg');
-                if (svg) {
-                    svg.style.transform = `rotate(${van.heading_degrees}deg)`;
-                }
-            }
+        const svg = markerRef.current?.getElement()?.querySelector('svg');
+        if (!svg) return;
+        angleRef.current = unwrapHeading(angleRef.current, van.heading_degrees);
+        const transform = `rotate(${angleRef.current}deg)`;
+        if (svg.dataset.rotated) {
+            svg.style.transform = transform;
+            return;
         }
+        // A freshly created icon starts at 0°: jump to the heading without animating.
+        const transition = svg.style.transition;
+        svg.style.transition = 'none';
+        svg.style.transform = transform;
+        void svg.getBoundingClientRect();
+        svg.style.transition = transition;
+        svg.dataset.rotated = '1';
     }, [van.heading_degrees, icon]);
 
     return (

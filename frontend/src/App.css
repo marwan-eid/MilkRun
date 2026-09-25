@@ -154,7 +154,23 @@ body {
 .van-marker {
   background: none !important;
   border: none !important;
-  transition: transform 0.5s linear !important;
+}
+
+/* Glide between position updates (each van reports every 500 ms)... */
+.leaflet-marker-icon.van-marker {
+  transition: transform 0.5s linear;
+}
+
+/* ...but follow the map's zoom animation exactly (Leaflet's own timing),
+   instead of trailing half a second behind it. */
+.leaflet-zoom-anim .leaflet-marker-icon.van-marker {
+  transition: transform 0.25s cubic-bezier(0, 0, 0.25, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .leaflet-marker-icon.van-marker {
+    transition: none;
+  }
 }
 
 /* ═══ SLA Panel ═══ */

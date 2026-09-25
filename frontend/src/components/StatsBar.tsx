@@ -1,4 +1,5 @@
 import { usePipelineHealth } from '../hooks/usePipelineHealth';
+import { useNow } from '../hooks/useNow';
 
 interface StatsBarProps {
     connected: boolean;
@@ -9,7 +10,9 @@ interface StatsBarProps {
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
 export function StatsBar({ connected, vanCount, lastEvent }: StatsBarProps) {
-    const lag = lastEvent > 0 ? Math.floor((Date.now() - lastEvent) / 1000) : -1;
+    const now = useNow();
+    // Keeps counting up when the stream stalls
+    const lag = lastEvent > 0 ? Math.max(0, Math.floor((now - lastEvent) / 1000)) : -1;
     const health = usePipelineHealth();
 
     return (

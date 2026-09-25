@@ -51,23 +51,26 @@ async function load<T>(path: string): Promise<Result<T>> {
     }
 }
 
+interface Results {
+    delayZones: Result<DelayZone>;
+    vanPerf: Result<VanPerf>;
+    atRisk: Result<AtRiskVan>;
+    zoneRisk: Result<ZoneRisk>;
+    calciteReady: boolean;
+}
+
 interface AnalyticsPanelProps {
     visible: boolean;
     onClose: () => void;
 }
 
 export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
-    const [delayZones, setDelayZones] = useState<Result<DelayZone>>({ rows: [] });
-    const [vanPerf, setVanPerf] = useState<Result<VanPerf>>({ rows: [] });
-    const [atRisk, setAtRisk] = useState<Result<AtRiskVan>>({ rows: [] });
-    const [zoneRisk, setZoneRisk] = useState<Result<ZoneRisk>>({ rows: [] });
-    const [loading, setLoading] = useState(false);
-    const [calciteReady, setCalciteReady] = useState(false);
+    // null while the queries run; cleared on close so the next open shows the spinner
+    const [results, setResults] = useState<Results | null>(null);
 
     useEffect(() => {
         if (!visible) return;
         let cancelled = false;
-        setLoading(true);
 
         Promise.all([
             load<DelayZone>('delay-zones?limit=5'),
@@ -75,22 +78,24 @@ export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
             load<AtRiskVan>('at-risk-vans'),
             load<ZoneRisk>('live-zone-risk'),
             fetch(`${API_BASE}/api/analytics/status`).then(r => r.json()).catch(() => ({ calciteReady: false })),
-        ]).then(([zones, perf, risk, inZones, status]) => {
-            if (cancelled) return;
-            setDelayZones(zones);
-            setVanPerf(perf);
-            setAtRisk(risk);
-            setZoneRisk(inZones);
-            setCalciteReady(Boolean(status.calciteReady));
-            setLoading(false);
+        ]).then(([delayZones, vanPerf, atRisk, zoneRisk, status]) => {
+            if (!cancelled) {
+                setResults({ delayZones, vanPerf, atRisk, zoneRisk, calciteReady: Boolean(status.calciteReady) });
+            }
         });
         return () => { cancelled = true; };
     }, [visible]);
 
     if (!visible) return null;
 
+    const close = () => {
+        setResults(null);
+        onClose();
+    };
+    const calciteReady = results?.calciteReady ?? false;
+
     return (
-        <div className="analytics-overlay" onClick={onClose}>
+        <div className="analytics-overlay" onClick={close}>
             <div className="analytics-modal" onClick={e => e.stopPropagation()}>
                 <div className="analytics-header">
                     <h2>📊 Fleet Analytics</h2>
@@ -98,11 +103,11 @@ export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
                         <span className={`calcite-badge ${calciteReady ? 'ready' : 'offline'}`}>
                             Calcite {calciteReady ? '● Ready' : '○ Offline'}
                         </span>
-                        <button className="close-btn" onClick={onClose}>✕</button>
+                        <button className="close-btn" onClick={close}>✕</button>
                     </div>
                 </div>
 
-                {loading ? (
+                {results === null ? (
                     <div className="analytics-loading">
                         <div className="spinner" />
                         <span>Querying via Apache Calcite…</span>
@@ -110,30 +115,30 @@ export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
                 ) : (
                     <div className="analytics-grid">
                         <Card title="⚠️ At-risk vans right now" desc="Live fleet state joined with each van's breach history (federated query)"
-                            result={atRisk} empty="No van is at risk right now"
+                            result={results.atRisk} empty="No van is at risk right now"
                             head={['Van', 'Risk', 'Slack', 'Past breaches', 'Avg past delay']}
                             row={v => [v.van_id, v.sla_risk, formatSlack(v.slack_seconds), v.past_breaches,
                                 v.past_avg_breach_seconds !== null ? `${Math.round(v.past_avg_breach_seconds)}s` : '—']} />
 
                         <Card title="🚧 Vans in delay zones" desc="Vans inside a zone now, with that zone's breach history (federated query)"
-                            result={zoneRisk} empty="No van is inside a delay zone right now"
+                            result={results.zoneRisk} empty="No van is inside a delay zone right now"
                             head={['Van', 'Zone', 'Risk', 'Zone breaches', 'Avg delay']}
                             row={z => [z.van_id, z.zone_name, z.sla_risk, z.zone_breaches,
                                 z.zone_avg_breach_seconds !== null ? `${Math.round(z.zone_avg_breach_seconds)}s` : '—']} />
 
                         <Card title="🔴 Top delay zones" desc="Geofence zones where the most delivery time was lost to late arrivals"
-                            result={delayZones} empty="No late arrivals inside a zone yet"
+                            result={results.delayZones} empty="No late arrivals inside a zone yet"
                             head={['Zone', 'Type', 'Speed', 'Breaches', 'Avg delay']}
-                            row={z => [z.zone_name, <span className="type-badge">{z.zone_type}</span>, `${z.speed_factor}x`,
+                            row={z => [z.zone_name, <span key="type" className="type-badge">{z.zone_type}</span>, `${z.speed_factor}x`,
                                 z.breach_count, `${Math.round(z.avg_breach_seconds)}s`]} />
 
                         <Card title="🚐 Van performance" desc="Delivery success over completed routes"
-                            result={vanPerf} empty="No completed routes yet"
+                            result={results.vanPerf} empty="No completed routes yet"
                             head={['Van', 'Routes', 'Completed', 'Failed', 'Success %', 'Avg speed']}
                             row={v => [v.van_id, v.total_routes,
-                                <span className="text-green">{v.total_completed}</span>,
-                                <span className="text-red">{v.total_failed}</span>,
-                                <div className="perf-bar">
+                                <span key="ok" className="text-green">{v.total_completed}</span>,
+                                <span key="failed" className="text-red">{v.total_failed}</span>,
+                                <div key="rate" className="perf-bar">
                                     <div className="perf-fill" style={{ width: `${Math.min(v.success_rate_pct, 100)}%` }} />
                                     <span>{v.success_rate_pct.toFixed(1)}%</span>
                                 </div>,
