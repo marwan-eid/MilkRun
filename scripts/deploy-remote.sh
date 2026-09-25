@@ -10,7 +10,12 @@ set -euo pipefail
 
 APP_DIR="$1"
 SHA="$2"
-COMPOSE="docker compose"
+# The Compose v2 plugin if installed, else the standalone binary.
+if docker compose version >/dev/null 2>&1; then
+    COMPOSE="docker compose"
+else
+    COMPOSE="docker-compose"
+fi
 
 cd "$APP_DIR"
 
@@ -32,7 +37,8 @@ start() {
 
 healthy() {
     # The backend publishes no host port; ask it from inside its container.
-    for _ in $(seq 1 45); do
+    # Up to 6 minutes: schema migrations on a small VM can take a while.
+    for _ in $(seq 1 90); do
         if $COMPOSE exec -T backend wget -qO- http://localhost:8080/api/observability/live 2>/dev/null | grep -q UP; then
             return 0
         fi
