@@ -1,12 +1,16 @@
 package com.milkrun.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.milkrun.dispatch.DispatchPlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -15,6 +19,7 @@ class DispatchControllerTest {
 
     /** Records published messages; can be switched to fail like an unreachable broker. */
     private static final class FakePublisher implements DispatchPublisher {
+        final List<String> keys = new ArrayList<>();
         final List<String> payloads = new ArrayList<>();
         boolean failing;
 
@@ -23,32 +28,54 @@ class DispatchControllerTest {
             if (failing) {
                 return CompletableFuture.failedFuture(new RuntimeException("broker down"));
             }
+            keys.add(key);
             payloads.add(payload);
             return CompletableFuture.completedFuture(null);
         }
     }
 
     private FakePublisher publisher;
+    private boolean vanAvailable;
     private WebTestClient client;
 
     @BeforeEach
     void setUp() {
         publisher = new FakePublisher();
-        DispatchController controller = new DispatchController(
-                publisher, new ObjectMapper().findAndRegisterModules(),
-                new DispatchRateLimiter(2, 6, 100),
-                52.28, 52.43, 4.75, 5.02);
+        vanAvailable = true;
+        DispatchPlanner planner = order -> vanAvailable
+                ? Optional.of(new DispatchPlanner.Assignment(order.orderId(), "van-007", "route-7",
+                        order.location().latitude(), order.location().longitude(), 3, 19, 1.25,
+                        Instant.parse("2026-09-25T10:05:00Z"), Instant.parse("2026-09-25T10:10:00Z"),
+                        0, true, 42, Instant.parse("2026-09-25T10:00:00Z")))
+                : Optional.empty();
+        ObjectMapper mapper = new ObjectMapper().findAndRegisterModules()
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        DispatchController controller = new DispatchController(planner, publisher, mapper,
+                new DispatchRateLimiter(2, 6, 100), 52.28, 52.43, 4.75, 5.02);
         client = WebTestClient.bindToController(controller).build();
     }
 
     @Test
-    void acceptsOrderInsideServiceArea() {
+    void assignsTheOrderAndPublishesItForThatVan() {
         post("203.0.113.7", 52.37, 4.89)
                 .expectStatus().isAccepted()
-                .expectBody().jsonPath("$.order_id").isNotEmpty();
+                .expectBody()
+                .jsonPath("$.van_id").isEqualTo("van-007")
+                .jsonPath("$.insert_before").isEqualTo(3)
+                .jsonPath("$.extra_km").isEqualTo(1.25)
+                .jsonPath("$.on_time").isEqualTo(true)
+                .jsonPath("$.order_id").isNotEmpty();
 
-        assertEquals(1, publisher.payloads.size());
-        assertTrue(publisher.payloads.get(0).contains("52.37"));
+        assertEquals(List.of("van-007"), publisher.keys, "keyed by van, so the van's messages stay ordered");
+        assertTrue(publisher.payloads.get(0).contains("\"latitude\":52.37"));
+        assertTrue(publisher.payloads.get(0).contains("\"sla_deadline\":\"2026-09-25T10:10:00Z\""));
+    }
+
+    @Test
+    void conflictWhenNoVanCanTakeIt() {
+        vanAvailable = false;
+        post("203.0.113.7", 52.37, 4.89).expectStatus().isEqualTo(409);
+        assertTrue(publisher.payloads.isEmpty());
     }
 
     @Test

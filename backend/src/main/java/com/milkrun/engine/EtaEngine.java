@@ -23,6 +23,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalDouble;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -311,6 +312,17 @@ public class EtaEngine {
         }
         synchronized (track) {
             return routeId.equals(track.routeId) ? track.firstPrediction.get(customerId) : null;
+        }
+    }
+
+    /** The van's learned free-flow speed in wall-clock m/s, if it has been measured. */
+    public OptionalDouble freeFlowSpeed(String vanId) {
+        Track track = tracks.get(vanId);
+        if (track == null) {
+            return OptionalDouble.empty();
+        }
+        synchronized (track) {
+            return Double.isNaN(track.freeFlowMps) ? OptionalDouble.empty() : OptionalDouble.of(track.freeFlowMps);
         }
     }
 

@@ -48,7 +48,7 @@ async function main(): Promise<void> {
     await producer.connect();
 
     const simulators: VanSimulator[] = [];
-    const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators, TIME_SCALE);
+    const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators);
     await dispatchConsumer.connect();
 
     // Deploy a van; when it finishes its route, deploy a fresh route for the same van.

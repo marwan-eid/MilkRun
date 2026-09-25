@@ -66,7 +66,7 @@
         "allDeclaredFields": true
     },
     {
-        "name": "com.milkrun.model.DispatchEvent",
+        "name": "com.milkrun.dispatch.DispatchPlanner$Assignment",
         "allDeclaredConstructors": true,
         "allDeclaredMethods": true,
         "allDeclaredFields": true

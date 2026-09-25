@@ -95,6 +95,15 @@ class PipelineIntegrationTest {
     @Autowired
     MeterRegistry meters;
 
+    @Autowired
+    com.milkrun.engine.RoutePlanStore store;
+
+    @Autowired
+    com.milkrun.engine.EtaEngine etaEngine;
+
+    @Autowired
+    org.springframework.test.web.reactive.server.WebTestClient webClient;
+
     @BeforeAll
     static void startProducer() {
         producer = new KafkaProducer<>(Map.of(
@@ -117,18 +126,26 @@ class PipelineIntegrationTest {
 
     /** Route north along lon 4.85 (outside every zone) with one stop at vertex 20 of 41. */
     static RoutePlan plan(String van, String route) {
+        return plan(van, route, 4.85);
+    }
+
+    static RoutePlan plan(String van, String route, double lon) {
         double[][] w = new double[41][];
         for (int i = 0; i < w.length; i++) {
-            w[i] = new double[] { 52.300 + i * 0.0005, 4.85 };
+            w[i] = new double[] { 52.300 + i * 0.0005, lon };
         }
         Instant deadline = Instant.now().plusSeconds(600);
         return new RoutePlan(route, van, 0, Instant.now(), 4, 25,
-                List.of(new RoutePlan.Stop(0, "c0", new Location(52.310, 4.85), deadline, deadline.minusSeconds(60), 1, 20)),
+                List.of(new RoutePlan.Stop(0, "c0", new Location(52.310, lon), deadline, deadline.minusSeconds(60), 1, 20)),
                 w);
     }
 
     static GpsEvent gps(String van, String route, long seq, Instant at, int vertex) {
-        return new GpsEvent(UUID.randomUUID(), van, seq, at, at, new Location(52.300 + vertex * 0.0005, 4.85),
+        return gps(van, route, seq, at, vertex, 4.85);
+    }
+
+    static GpsEvent gps(String van, String route, long seq, Instant at, int vertex, double lon) {
+        return new GpsEvent(UUID.randomUUID(), van, seq, at, at, new Location(52.300 + vertex * 0.0005, lon),
                 25, 0, 90, route, 0, 1, VanStatus.EN_ROUTE);
     }
 
@@ -277,6 +294,48 @@ class PipelineIntegrationTest {
     private static String header(ConsumerRecord<String, String> r, String name) {
         var h = r.headers().lastHeader(name);
         return h == null ? null : new String(h.value(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    // ═══════════════════ Dispatch ═══════════════════
+
+    @Test
+    void dispatchAssignsAnOrderToAVanAndPublishesIt() throws Exception {
+        String van = "van-it-dispatch";
+        String route = "route-it-dispatch";
+        // A corridor of its own (lon 4.95), away from the other tests' vans
+        send("route-plans", van, plan(van, route, 4.95));
+        await().atMost(Duration.ofSeconds(30)).until(() -> store.get(van, route).isPresent());
+        send("gps-events", van, gps(van, route, 1, Instant.now(), 5, 4.95));
+        await().atMost(Duration.ofSeconds(30)).until(() -> etaEngine.getAllVanStates().containsKey(van));
+
+        var response = webClient.post().uri("/api/dispatch")
+                .header("Content-Type", "application/json")
+                .bodyValue("{\"latitude\":52.3070,\"longitude\":4.9510}")
+                .exchange()
+                .expectStatus().isAccepted()
+                .expectBody(Map.class).returnResult().getResponseBody();
+        assertNotNull(response);
+        assertEquals(van, response.get("van_id"));
+        assertEquals(0, response.get("insert_before"), "before the van's only stop");
+
+        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(Map.of(
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
+                ConsumerConfig.GROUP_ID_CONFIG, "it-dispatch-" + UUID.randomUUID(),
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class))) {
+            consumer.subscribe(List.of("dispatch-events"));
+            List<ConsumerRecord<String, String>> found = new ArrayList<>();
+            await().atMost(Duration.ofSeconds(20)).until(() -> {
+                consumer.poll(Duration.ofMillis(500)).forEach(r -> {
+                    if (van.equals(r.key())) found.add(r);
+                });
+                return !found.isEmpty();
+            });
+            Map<?, ?> message = JSON.readValue(found.get(0).value(), Map.class);
+            assertEquals(route, message.get("route_id"));
+            assertEquals(response.get("order_id"), message.get("order_id"));
+        }
     }
 
     // ═══════════════════ Delivery path ═══════════════════
