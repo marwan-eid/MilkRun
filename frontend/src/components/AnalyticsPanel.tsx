@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
+import { formatSlack } from '../lib/format';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -17,7 +18,37 @@ interface VanPerf {
     total_completed: number;
     total_failed: number;
     success_rate_pct: number;
-    avg_speed: number;
+    avg_speed: number | null;
+}
+
+interface AtRiskVan {
+    van_id: string;
+    sla_risk: string;
+    slack_seconds: number | null;
+    zone_name: string | null;
+    past_breaches: number;
+    past_avg_breach_seconds: number | null;
+}
+
+interface ZoneRisk {
+    van_id: string;
+    zone_name: string;
+    sla_risk: string;
+    zone_breaches: number;
+    zone_avg_breach_seconds: number | null;
+}
+
+/** Rows of a query, or the reason it failed. */
+type Result<T> = { rows: T[] } | { error: string };
+
+async function load<T>(path: string): Promise<Result<T>> {
+    try {
+        const res = await fetch(`${API_BASE}/api/analytics/${path}`);
+        if (!res.ok) return { error: `query failed (HTTP ${res.status})` };
+        return { rows: await res.json() };
+    } catch {
+        return { error: 'backend unreachable' };
+    }
 }
 
 interface AnalyticsPanelProps {
@@ -26,26 +57,34 @@ interface AnalyticsPanelProps {
 }
 
 export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
-    const [delayZones, setDelayZones] = useState<DelayZone[]>([]);
-    const [vanPerf, setVanPerf] = useState<VanPerf[]>([]);
+    const [delayZones, setDelayZones] = useState<Result<DelayZone>>({ rows: [] });
+    const [vanPerf, setVanPerf] = useState<Result<VanPerf>>({ rows: [] });
+    const [atRisk, setAtRisk] = useState<Result<AtRiskVan>>({ rows: [] });
+    const [zoneRisk, setZoneRisk] = useState<Result<ZoneRisk>>({ rows: [] });
     const [loading, setLoading] = useState(false);
     const [calciteReady, setCalciteReady] = useState(false);
 
     useEffect(() => {
         if (!visible) return;
-
+        let cancelled = false;
         setLoading(true);
 
         Promise.all([
-            fetch(`${API_BASE}/api/analytics/delay-zones?limit=5`).then(r => r.json()).catch(() => []),
-            fetch(`${API_BASE}/api/analytics/van-performance?limit=10`).then(r => r.json()).catch(() => []),
+            load<DelayZone>('delay-zones?limit=5'),
+            load<VanPerf>('van-performance?limit=10'),
+            load<AtRiskVan>('at-risk-vans'),
+            load<ZoneRisk>('live-zone-risk'),
             fetch(`${API_BASE}/api/analytics/status`).then(r => r.json()).catch(() => ({ calciteReady: false })),
-        ]).then(([zones, perf, status]) => {
+        ]).then(([zones, perf, risk, inZones, status]) => {
+            if (cancelled) return;
             setDelayZones(zones);
             setVanPerf(perf);
-            setCalciteReady(status.calciteReady);
+            setAtRisk(risk);
+            setZoneRisk(inZones);
+            setCalciteReady(Boolean(status.calciteReady));
             setLoading(false);
         });
+        return () => { cancelled = true; };
     }, [visible]);
 
     if (!visible) return null;
@@ -70,86 +109,76 @@ export function AnalyticsPanel({ visible, onClose }: AnalyticsPanelProps) {
                     </div>
                 ) : (
                     <div className="analytics-grid">
-                        {/* Delay Zones */}
-                        <div className="analytics-card">
-                            <h3>🔴 Top Delay Zones</h3>
-                            <p className="card-desc">Geofence zones causing the most SLA breaches</p>
-                            {delayZones.length > 0 ? (
-                                <table className="analytics-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Zone</th>
-                                            <th>Type</th>
-                                            <th>Speed Factor</th>
-                                            <th>Breaches</th>
-                                            <th>Avg Delay</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {delayZones.map(z => (
-                                            <tr key={z.zone_name}>
-                                                <td>{z.zone_name}</td>
-                                                <td><span className="type-badge">{z.zone_type}</span></td>
-                                                <td>{z.speed_factor}x</td>
-                                                <td>{z.breach_count}</td>
-                                                <td>{Math.round(z.avg_breach_seconds)}s</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            ) : (
-                                <p className="no-data">No breach data yet — start the simulator first</p>
-                            )}
-                        </div>
+                        <Card title="⚠️ At-risk vans right now" desc="Live fleet state joined with each van's breach history (federated query)"
+                            result={atRisk} empty="No van is at risk right now"
+                            head={['Van', 'Risk', 'Slack', 'Past breaches', 'Avg past delay']}
+                            row={v => [v.van_id, v.sla_risk, formatSlack(v.slack_seconds), v.past_breaches,
+                                v.past_avg_breach_seconds !== null ? `${Math.round(v.past_avg_breach_seconds)}s` : '—']} />
 
-                        {/* Van Performance */}
-                        <div className="analytics-card">
-                            <h3>🚐 Van Performance</h3>
-                            <p className="card-desc">Route completion and efficiency rankings</p>
-                            {vanPerf.length > 0 ? (
-                                <table className="analytics-table">
-                                    <thead>
-                                        <tr>
-                                            <th>Van</th>
-                                            <th>Routes</th>
-                                            <th>Completed</th>
-                                            <th>Failed</th>
-                                            <th>Success %</th>
-                                            <th>Avg Speed</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {vanPerf.map(v => (
-                                            <tr key={v.van_id}>
-                                                <td>{v.van_id}</td>
-                                                <td>{v.total_routes}</td>
-                                                <td className="text-green">{v.total_completed}</td>
-                                                <td className="text-red">{v.total_failed}</td>
-                                                <td>
-                                                    <div className="perf-bar">
-                                                        <div
-                                                            className="perf-fill"
-                                                            style={{ width: `${Math.min(v.success_rate_pct, 100)}%` }}
-                                                        />
-                                                        <span>{v.success_rate_pct.toFixed(1)}%</span>
-                                                    </div>
-                                                </td>
-                                                <td>{v.avg_speed.toFixed(1)} km/h</td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            ) : (
-                                <p className="no-data">No completed routes yet</p>
-                            )}
-                        </div>
+                        <Card title="🚧 Vans in delay zones" desc="Vans inside a zone now, with that zone's breach history (federated query)"
+                            result={zoneRisk} empty="No van is inside a delay zone right now"
+                            head={['Van', 'Zone', 'Risk', 'Zone breaches', 'Avg delay']}
+                            row={z => [z.van_id, z.zone_name, z.sla_risk, z.zone_breaches,
+                                z.zone_avg_breach_seconds !== null ? `${Math.round(z.zone_avg_breach_seconds)}s` : '—']} />
+
+                        <Card title="🔴 Top delay zones" desc="Geofence zones where the most delivery time was lost to late arrivals"
+                            result={delayZones} empty="No late arrivals inside a zone yet"
+                            head={['Zone', 'Type', 'Speed', 'Breaches', 'Avg delay']}
+                            row={z => [z.zone_name, <span className="type-badge">{z.zone_type}</span>, `${z.speed_factor}x`,
+                                z.breach_count, `${Math.round(z.avg_breach_seconds)}s`]} />
+
+                        <Card title="🚐 Van performance" desc="Delivery success over completed routes"
+                            result={vanPerf} empty="No completed routes yet"
+                            head={['Van', 'Routes', 'Completed', 'Failed', 'Success %', 'Avg speed']}
+                            row={v => [v.van_id, v.total_routes,
+                                <span className="text-green">{v.total_completed}</span>,
+                                <span className="text-red">{v.total_failed}</span>,
+                                <div className="perf-bar">
+                                    <div className="perf-fill" style={{ width: `${Math.min(v.success_rate_pct, 100)}%` }} />
+                                    <span>{v.success_rate_pct.toFixed(1)}%</span>
+                                </div>,
+                                v.avg_speed !== null ? `${v.avg_speed.toFixed(1)} km/h` : '—']} />
                     </div>
                 )}
 
                 <div className="analytics-footer">
-                    <span>Powered by Apache Calcite • Federated PostgreSQL JDBC adapter</span>
+                    <span>Apache Calcite federating PostgreSQL (JDBC adapter) with the live in-memory fleet</span>
                 </div>
             </div>
+        </div>
+    );
+}
+
+interface CardProps<T> {
+    title: string;
+    desc: string;
+    result: Result<T>;
+    empty: string;
+    head: string[];
+    row: (item: T) => ReactNode[];
+}
+
+function Card<T>({ title, desc, result, empty, head, row }: CardProps<T>) {
+    return (
+        <div className="analytics-card">
+            <h3>{title}</h3>
+            <p className="card-desc">{desc}</p>
+            {'error' in result ? (
+                <p className="no-data">Unavailable: {result.error}</p>
+            ) : result.rows.length === 0 ? (
+                <p className="no-data">{empty}</p>
+            ) : (
+                <table className="analytics-table">
+                    <thead>
+                        <tr>{head.map(h => <th key={h}>{h}</th>)}</tr>
+                    </thead>
+                    <tbody>
+                        {result.rows.map((item, i) => (
+                            <tr key={i}>{row(item).map((cell, j) => <td key={j}>{cell}</td>)}</tr>
+                        ))}
+                    </tbody>
+                </table>
+            )}
         </div>
     );
 }

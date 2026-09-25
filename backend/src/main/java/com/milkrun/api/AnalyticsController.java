@@ -1,21 +1,28 @@
 package com.milkrun.api;
 
 import com.milkrun.calcite.AnalyticsService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
 
 /**
- * REST controller for analytics endpoints powered by Apache Calcite.
+ * Analytics over the Apache Calcite federation layer.
  *
- * All endpoints return data queried through Calcite's federated layer
- * rather than directly through R2DBC, demonstrating the separation of
- * real-time (R2DBC/reactive) vs. analytical (Calcite/JDBC) query paths.
+ * Historical endpoints query PostgreSQL through Calcite; the live endpoints
+ * join the in-memory fleet state with PostgreSQL in one SQL statement. A
+ * failed query returns 503 with an error message instead of an empty list.
  */
 @RestController
 @RequestMapping("/api/analytics")
 public class AnalyticsController {
+
+    private static final Logger log = LoggerFactory.getLogger(AnalyticsController.class);
 
     private final AnalyticsService analyticsService;
 
@@ -23,67 +30,64 @@ public class AnalyticsController {
         this.analyticsService = analyticsService;
     }
 
-    /**
-     * Top delay zones ranked by total SLA breach seconds.
-     * Used by the frontend heatmap overlay.
-     *
-     * Example: GET /api/analytics/delay-zones?limit=10
-     */
+    /** Top delay zones ranked by total SLA breach seconds, e.g. {@code ?limit=10}. */
     @GetMapping("/delay-zones")
-    public List<Map<String, Object>> getDelayZones(
-            @RequestParam(defaultValue = "10") int limit) {
-        return analyticsService.getTopDelayZones(limit);
+    public Mono<ResponseEntity<Object>> getDelayZones(@RequestParam(defaultValue = "10") int limit) {
+        return respond("delay-zones", analyticsService.getTopDelayZones(limit));
     }
 
-    /**
-     * SLA breach summary grouped by severity and cause.
-     *
-     * Example: GET /api/analytics/sla-summary
-     */
+    /** SLA breaches grouped by severity and cause. */
     @GetMapping("/sla-summary")
-    public List<Map<String, Object>> getSlaSummary() {
-        return analyticsService.getSlaSummary();
+    public Mono<ResponseEntity<Object>> getSlaSummary() {
+        return respond("sla-summary", analyticsService.getSlaSummary());
     }
 
-    /**
-     * Van performance rankings by success rate and route count.
-     *
-     * Example: GET /api/analytics/van-performance?limit=20
-     */
+    /** Van rankings by success rate over completed routes, e.g. {@code ?limit=20}. */
     @GetMapping("/van-performance")
-    public List<Map<String, Object>> getVanPerformance(
-            @RequestParam(defaultValue = "20") int limit) {
-        return analyticsService.getVanPerformance(limit);
+    public Mono<ResponseEntity<Object>> getVanPerformance(@RequestParam(defaultValue = "20") int limit) {
+        return respond("van-performance", analyticsService.getVanPerformance(limit));
     }
 
-    /**
-     * Dead letter queue event summary by error reason.
-     *
-     * Example: GET /api/analytics/dlq-summary
-     */
+    /** Dead-letter entries by reason. */
     @GetMapping("/dlq-summary")
-    public List<Map<String, Object>> getDlqSummary() {
-        return analyticsService.getDlqSummary();
+    public Mono<ResponseEntity<Object>> getDlqSummary() {
+        return respond("dlq-summary", analyticsService.getDlqSummary());
     }
 
-    /**
-     * Geofence heatmap data with delay severity for map overlay.
-     *
-     * Example: GET /api/analytics/heatmap
-     */
+    /** Every zone with its breach count and average delay. */
     @GetMapping("/heatmap")
-    public List<Map<String, Object>> getHeatmapData() {
-        return analyticsService.getGeofenceHeatmapData();
+    public Mono<ResponseEntity<Object>> getHeatmapData() {
+        return respond("heatmap", analyticsService.getGeofenceHeatmapData());
     }
 
-    /**
-     * Calcite ready check.
-     */
+    /** Federated: vans inside delay zones right now, with each zone's breach history. */
+    @GetMapping("/live-zone-risk")
+    public Mono<ResponseEntity<Object>> getLiveZoneRisk() {
+        return respond("live-zone-risk", analyticsService.getLiveZoneRisk());
+    }
+
+    /** Federated: vans at SLA risk right now, with their breach history. */
+    @GetMapping("/at-risk-vans")
+    public Mono<ResponseEntity<Object>> getAtRiskVans() {
+        return respond("at-risk-vans", analyticsService.getAtRiskVans());
+    }
+
     @GetMapping("/status")
     public Map<String, Object> getStatus() {
         return Map.of(
                 "calciteReady", analyticsService.isReady(),
-                "engine", "Apache Calcite 1.37.0",
-                "federation", "PostgreSQL JDBC adapter");
+                "engine", "Apache Calcite " + java.util.Objects.requireNonNullElse(
+                        org.apache.calcite.jdbc.Driver.class.getPackage().getImplementationVersion(), ""),
+                "sources", List.of("milkrun: PostgreSQL (JDBC adapter)", "live: in-memory fleet state"));
+    }
+
+    private Mono<ResponseEntity<Object>> respond(String name, Mono<List<Map<String, Object>>> rows) {
+        return rows
+                .map(r -> ResponseEntity.ok().<Object>body(r))
+                .onErrorResume(e -> {
+                    log.warn("Analytics query {} failed: {}", name, e.toString());
+                    return Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                            .body(Map.of("error", "Analytics query failed", "query", name)));
+                });
     }
 }
