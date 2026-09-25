@@ -14,6 +14,8 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      # The image defaults to a 1 GB heap; the demo VM has 1 GB of RAM in total
+      KAFKA_HEAP_OPTS: "-Xms64m -Xmx64m"
     restart: always
 
   kafka:
@@ -27,6 +29,7 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
     restart: always
 
   # ==========================================

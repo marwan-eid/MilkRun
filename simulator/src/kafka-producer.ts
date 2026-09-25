@@ -1,6 +1,10 @@
 import { Kafka, Producer, Partitioners, CompressionTypes, type ITopicConfig } from 'kafkajs';
 import { type GpsEvent, type DeliveryEvent, type RoutePlanMessage } from './models/index.js';
 import { type EventSink } from './van-simulator.js';
+import { Batcher } from './batcher.js';
+
+/** How long GPS pings wait to be sent together (ms). */
+const GPS_LINGER_MS = parseInt(process.env.GPS_LINGER_MS || '100', 10);
 
 export const TOPICS = {
     gps: 'gps-events',
@@ -32,7 +36,7 @@ const REQUIRED_TOPICS: ITopicConfig[] = [
  * Kafka producer for the simulator.
  *
  * - Keyed by van_id, so each van's events stay ordered within one partition
- * - Idempotent producer, GZIP compression
+ * - Idempotent producer; GPS pings batched and uncompressed, other events GZIP
  * - Sets ingestion_timestamp when a GPS event is sent
  */
 export class KafkaEventProducer implements EventSink {
@@ -44,6 +48,11 @@ export class KafkaEventProducer implements EventSink {
     private _deliverySent = 0;
     private _plansSent = 0;
     private _errors = 0;
+
+    // Pings from all vans are sent in one request every GPS_LINGER_MS instead of
+    // one request each, uncompressed: on a small VM that is the difference
+    // between the simulator saturating the CPU and not.
+    private readonly gpsBatcher = new Batcher<GpsEvent>((batch) => this.sendGpsBatch(batch), GPS_LINGER_MS);
 
     constructor(private readonly brokers: string[] = ['localhost:9092']) {
         this.kafka = new Kafka({
@@ -69,6 +78,7 @@ export class KafkaEventProducer implements EventSink {
 
     async disconnect(): Promise<void> {
         if (!this.connected) return;
+        await this.gpsBatcher.drain();
         await this.producer.disconnect();
         this.connected = false;
         console.log('📡 Kafka producer disconnected');
@@ -92,12 +102,15 @@ export class KafkaEventProducer implements EventSink {
         }
     }
 
+    /** Queues pings; they go out together with everything queued in the next GPS_LINGER_MS. */
     async sendGpsEvents(events: GpsEvent[]): Promise<void> {
-        if (events.length === 0) return;
+        return this.gpsBatcher.add(events);
+    }
+
+    private async sendGpsBatch(events: GpsEvent[]): Promise<void> {
         try {
             await this.producer.send({
                 topic: TOPICS.gps,
-                compression: CompressionTypes.GZIP,
                 messages: events.map((event) => ({
                     key: event.van_id,
                     value: JSON.stringify({ ...event, ingestion_timestamp: new Date().toISOString() }),

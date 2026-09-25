@@ -5,3 +5,9 @@ spring:
 logging:
   level:
     com.milkrun: INFO
+
+milkrun:
+  analytics:
+    # The demo VM is small and shared; give queries time and serve cached results longer
+    timeout: 30s
+    cache-ttl: 60s
