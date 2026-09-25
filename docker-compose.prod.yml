@@ -1,4 +1,9 @@
-version: '3.8'
+# Production stack for the single-VM demo.
+#
+# Only Caddy publishes ports on the host (80/443). Kafka, Zookeeper, PostgreSQL
+# and the backend are reachable only on the compose network. Credentials come
+# from a .env file next to this file (see .env.example); the defaults match the
+# values the existing database volume was initialised with.
 
 services:
   # ==========================================
@@ -9,49 +14,42 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
     restart: always
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     depends_on:
       - zookeeper
-    ports:
-      - "9092:9092"
-      - "29092:29092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
     restart: always
 
   # ==========================================
-  #   Database: PostgreSQL + PostGIS (Analytics)
+  #   Database: PostgreSQL + PostGIS
   # ==========================================
   postgres:
     image: postgis/postgis:15-3.3
     environment:
-      POSTGRES_USER: milkrun
-      POSTGRES_PASSWORD: milkrun_secret
+      POSTGRES_USER: ${POSTGRES_USER:-milkrun}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-milkrun_secret}
       POSTGRES_DB: milkrun
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U milkrun" ]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-milkrun}" ]
       interval: 5s
       timeout: 5s
       retries: 5
     restart: always
 
   # ==========================================
-  #   Application: Java Spring Boot Engine
+  #   Application: Java Spring Boot engine
   # ==========================================
   backend:
     build:
@@ -61,16 +59,16 @@ services:
         condition: service_healthy
       kafka:
         condition: service_started
-    ports:
-      - "8080:8080"
     environment:
       - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/milkrun
+      - SPRING_R2DBC_USERNAME=${POSTGRES_USER:-milkrun}
+      - SPRING_R2DBC_PASSWORD=${POSTGRES_PASSWORD:-milkrun_secret}
       - MILKRUN_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - SPRING_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SPRING_PROFILES_ACTIVE=prod
     restart: on-failure
 
   # ==========================================
-  #   Application: Node.js TSX Simulator
+  #   Application: fleet simulator
   # ==========================================
   simulator:
     build:
@@ -86,7 +84,7 @@ services:
     restart: on-failure
 
   # ==========================================
-  #   Application: React Vite + Nginx Reverse Proxy
+  #   Application: React build served by nginx (proxies /api)
   # ==========================================
   frontend:
     build:
@@ -96,7 +94,7 @@ services:
     restart: always
 
   # ==========================================
-  #   Edge Proxy: SSL Let's Encrypt Caddy Auto HTTPS
+  #   Edge proxy: Caddy with automatic HTTPS
   # ==========================================
   caddy:
     image: caddy:2.7.6-alpine

@@ -16,7 +16,7 @@ const DEFAULT_ZOOM = 13;
 
 export function LiveMap({ vans, selectedVanId, onSelectVan }: LiveMapProps) {
 
-    // Inner component strictly to securely bind into the Leaflet DOM context
+    // Needs to live inside MapContainer to use the Leaflet map context
     function DispatchLayer() {
         const [clickPos, setClickPos] = useState<{ lat: number, lng: number } | null>(null);
 

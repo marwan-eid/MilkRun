@@ -18,7 +18,7 @@ export interface VanSimulatorConfig {
     deliveryDurationMaxSec: number;
     /** Whether to enable chaos modules. Default: true */
     chaosEnabled: boolean;
-    /** Callback strictly fired when the vehicle finalizes the RETURNED sequence */
+    /** Called once the van has emitted its final RETURNED ping */
     onRouteCompleted?: (vanId: string) => void;
 }
 
@@ -74,8 +74,8 @@ export class VanSimulator {
         this.reorderer = new EventReorderer();
         this.dropper = new ConnectionDropper();
 
-        // Anchor the sequence iterator to the current Unix epoch mathematically securely successfully efficiently 
-        // to bypass the Kafka Java JVM BloomFilter memory caching collisions!
+        // Seed the sequence with the current epoch millis so sequence numbers keep
+        // increasing when a van is respawned (the backend dedups on van_id + sequence).
         this.sequenceNumber = Date.now();
         this.isTicking = false;
 
@@ -385,7 +385,7 @@ export class VanSimulator {
         this.route.stops.splice(this.currentStopIndex, 0, adHocStop);
         this.stopWaypointIndices.splice(this.currentStopIndex, 0, this.waypointIndex + Math.floor(deviation.length / 2));
 
-        // Un-shift the OSRM geometric payload securely into the physical navigation iterator
+        // Insert the detour geometry right after the current position
         this.route.waypoints.splice(this.waypointIndex + 1, 0, ...deviation);
 
         // Normalize array index headers cleanly

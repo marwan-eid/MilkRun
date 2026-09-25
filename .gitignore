@@ -34,3 +34,9 @@ postgres-data/
 
 # Antigravity Agent Internal States
 *.resolved
+
+# Private keys and local secrets (never commit)
+*.key
+*.pem
+id_rsa*
+id_ed25519*

@@ -1,23 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <configuration>
-    <!-- ═══ Structured JSON logging for production ═══ -->
-    <!-- In dev: plain text. In production: JSON lines for Datadog/ELK -->
-
-    <property name="LOG_PATTERN" value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"/>
-
-    <!-- Console appender (dev mode — human readable) -->
-    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder>
-            <pattern>${LOG_PATTERN}</pattern>
-        </encoder>
-    </appender>
-
-    <!-- JSON appender (production — structured for Datadog/ELK) -->
-    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-            <pattern>{"timestamp":"%d{ISO8601}","level":"%level","logger":"%logger{36}","thread":"%thread","message":"%msg","service":"milkrun-backend"}%n</pattern>
-        </encoder>
-    </appender>
+    <!-- Dev: human-readable console lines. prod profile: one JSON object per line. -->
 
     <!-- Application loggers -->
     <logger name="com.milkrun" level="DEBUG" />
@@ -31,13 +14,28 @@
     <logger name="io.netty" level="WARN" />
     <logger name="io.r2dbc" level="WARN" />
 
-    <!-- Root: use CONSOLE in dev, switch to JSON via Spring profile -->
-    <root level="INFO">
-        <appender-ref ref="CONSOLE" />
-    </root>
+    <springProfile name="!prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+        </root>
+    </springProfile>
 
-    <!-- Production profile: JSON structured logging -->
     <springProfile name="prod">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.JsonEncoder">
+                <withFormattedMessage>true</withFormattedMessage>
+                <withMessage>false</withMessage>
+                <withArguments>false</withArguments>
+                <withContext>false</withContext>
+                <withSequenceNumber>false</withSequenceNumber>
+                <withNanoseconds>false</withNanoseconds>
+            </encoder>
+        </appender>
         <root level="INFO">
             <appender-ref ref="JSON" />
         </root>

@@ -26,7 +26,7 @@ export class DispatchConsumer {
     }
 
     public async connect(): Promise<void> {
-        // Resolve race condition where NodeJS beats Spring Boot natively to the Kafka Cluster
+        // The simulator can start before anything else has created the topic
         const admin = this.kafka.admin();
         await admin.connect();
         const topics = await admin.listTopics();
@@ -55,7 +55,7 @@ export class DispatchConsumer {
                     let closestVan: VanSimulator | null = null;
                     let minDistance = Infinity;
 
-                    // Trace all active operating routes globally to mathematically isolate the most performant redirect
+                    // Pick the closest van that is still out on its route
                     for (const sim of this.simulators) {
                         if (sim.currentStatus === 'IDLE' || sim.currentStatus === 'RETURNED' || sim.currentStatus === 'RETURNING') {
                             continue;

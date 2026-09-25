@@ -9,16 +9,9 @@ spring:
 
   # ═══ R2DBC PostgreSQL ═══
   r2dbc:
-    url: r2dbc:postgresql://localhost:5432/milkrun
-    username: milkrun
-    password: milkrun_secret
-
-  # ═══ CORS (allow React dev server & Production VM) ═══
-  webflux:
-    cors:
-      allowed-origins: "*"
-      allowed-methods: GET,POST
-      allowed-headers: "*"
+    url: ${SPRING_R2DBC_URL:r2dbc:postgresql://localhost:5432/milkrun}
+    username: ${SPRING_R2DBC_USERNAME:milkrun}
+    password: ${SPRING_R2DBC_PASSWORD:milkrun_secret}
 
 # ═══ Kafka ═══
 
@@ -39,18 +32,19 @@ milkrun:
     sla-critical-buffer-seconds: 30
   backpressure:
     sample-interval-ms: 500
-
-# ═══ Resilience4j Circuit Breaker ═══
-resilience4j:
-  circuitbreaker:
-    configs:
-      default:
-        slidingWindowSize: 20
-        failureRateThreshold: 50
-        waitDurationInOpenState: 10000
-        permittedNumberOfCallsInHalfOpenState: 5
-        slowCallDurationThreshold: 2000
-        slowCallRateThreshold: 80
+  # Origins allowed to call the API cross-origin (the dashboard itself is same-origin)
+  cors:
+    allowed-origins: ${MILKRUN_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:3000,https://marwan-eid.github.io}
+  dispatch:
+    service-area:
+      min-lat: 52.28
+      max-lat: 52.43
+      min-lon: 4.75
+      max-lon: 5.02
+    rate-limit:
+      client-burst: 3
+      client-per-minute: 6
+      global-per-minute: 60
 
 # ═══ Actuator ═══
 management:
@@ -61,9 +55,6 @@ management:
   metrics:
     tags:
       application: milkrun
-    export:
-      prometheus:
-        enabled: true
 
 server:
   port: 8080

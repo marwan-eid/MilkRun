@@ -147,7 +147,7 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
     const runId = Math.floor(Date.now() / 1000).toString();
     const routeId = `route-${today}-${vanId}-${runId}`;
 
-    // Pick 2-4 random neighborhoods for this van to service rigorously relying on Fisher-Yates bounds
+    // Pick 2-4 random neighborhoods (unbiased Fisher-Yates shuffle)
     const shuffled = [...NEIGHBORHOODS];
     for (let j = shuffled.length - 1; j > 0; j--) {
         const r = Math.floor(Math.random() * (j + 1));
@@ -176,11 +176,11 @@ export async function generateRoute(vanIndex: number, totalStops: number): Promi
         });
     }
 
-    // Pick the van's base macro origin Micro-Hub based on its natively grouped module
+    // Each van starts from one of the micro-hubs (round-robin by van index)
     const baseHub = HUBS[vanIndex % HUBS.length];
 
-    // Organically scatter the starting coordinate by ~1.5km mapping so clustered vans never bottleneck 
-    // down identically constrained street paths natively across the OSRM engine pipelines.
+    // Scatter start/end points by up to ~1.5 km so vans from the same hub do not
+    // all drive the exact same streets.
     const originHub = scatterPoint(baseHub, 0.015);
     const returningHub = scatterPoint(baseHub, 0.015);
 
@@ -212,7 +212,7 @@ export async function generateFleetRoutes(
         if (i % 5 === 0) {
             console.log(`   ... fetched mapping geometries for ${i + 1}/${vanCount} vans`);
         }
-        // Implement heavily-compliant 1.5s rate-limit stagger so OSRM API doesn't IP-ban us.
+        // 1.5 s between requests to respect the public OSRM server rate limit.
         if (i < vanCount - 1) {
             await new Promise(r => setTimeout(r, 1500));
         }

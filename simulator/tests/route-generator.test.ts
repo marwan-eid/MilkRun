@@ -40,7 +40,7 @@ describe('Route Generator', () => {
             const last = route.waypoints[route.waypoints.length - 1];
 
             // Hub is at Science Park: 52.3548, 4.9578
-            // The bounds are mathematically scattered randomly out up to 0.015 degrees strictly to organically resolve crowding algorithms 
+            // Start/end points are scattered up to 0.015° around the hub, so compare at 1 decimal
             expect(first.latitude).toBeCloseTo(52.3548, 1);
             expect(first.longitude).toBeCloseTo(4.9578, 1);
             expect(last.latitude).toBeCloseTo(52.3548, 1);

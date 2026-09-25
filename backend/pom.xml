@@ -56,6 +56,13 @@
             <groupId>org.apache.calcite</groupId>
             <artifactId>calcite-core</artifactId>
             <version>${calcite.version}</version>
+            <exclusions>
+                <!-- spring-jcl already bridges commons-logging to SLF4J -->
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- ═══ JDBC PostgreSQL (for Calcite adapter) ═══ -->

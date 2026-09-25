@@ -46,11 +46,11 @@ async function main(): Promise<void> {
     // 2. State management for active vans
     const simulators: VanSimulator[] = [];
 
-    // Initialize instantaneous Map Map Interface dispatcher
+    // Listens for ad-hoc orders dispatched from the map
     const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators);
     await dispatchConsumer.connect();
 
-    // 3. Recursive Engine: dynamically orchestrates, builds and respawns individual vans forever natively 
+    // 3. Deploy a van; when it finishes its route, deploy a fresh route for the same van
     const deployVan = async (vanIndex: number) => {
         const stops = STOPS_PER_VAN - 4 + Math.floor(Math.random() * 9);
         const route = await generateRoute(vanIndex, stops);
@@ -60,12 +60,12 @@ async function main(): Promise<void> {
             chaosEnabled: CHAOS_ENABLED,
             onRouteCompleted: async (vanId) => {
                 console.log(`♻️  Cycling Van Pipeline: Respawning ${vanId} out to a new neighborhood...`);
-                // Physically surgically slice the old van exactly out of Javascript V8 Node Memory!
+                // Drop the finished simulator so it can be garbage collected
                 const idx = simulators.findIndex(s => s.vanId === vanId);
                 if (idx > -1) {
                     simulators.splice(idx, 1);
                 }
-                // 1-second algorithmic breather before launching the next physical shift!
+                // Short pause before the next shift
                 setTimeout(() => deployVan(vanIndex), 1000);
             }
         });
@@ -74,7 +74,7 @@ async function main(): Promise<void> {
         sim.start();  // Spin up Kafka threads
     };
 
-    console.log(`\n🗺️  Generating ${VAN_COUNT} Perpetual routes across Amsterdam (Infinite Loop Active)...`);
+    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam (vans restart on completion)...`);
     for (let i = 0; i < VAN_COUNT; i++) {
         await deployVan(i);
         if (i % 5 === 0) {

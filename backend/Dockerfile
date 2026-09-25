@@ -1,7 +1,7 @@
 FROM maven:3.9.6-eclipse-temurin-21-alpine AS builder
 WORKDIR /app
 COPY pom.xml ./
-# Resolve dependencies natively first to utilize Docker layer caching
+# Resolve dependencies first so the layer is cached until pom.xml changes
 RUN mvn dependency:go-offline
 
 COPY src ./src
