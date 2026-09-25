@@ -1,9 +1,10 @@
 package com.milkrun.api;
 
 import com.milkrun.calcite.AnalyticsService;
+import com.milkrun.consumer.GpsEventPipeline;
 import com.milkrun.engine.EtaEngine;
 import com.milkrun.observability.PipelineHealthMonitor;
-import com.milkrun.pipeline.BloomFilterDedup;
+import com.milkrun.pipeline.Deduplicator;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -25,22 +26,25 @@ import java.util.Map;
 public class ObservabilityController {
 
     private final EtaEngine etaEngine;
-    private final BloomFilterDedup dedup;
+    private final Deduplicator dedup;
     private final AnalyticsService analyticsService;
     private final PipelineHealthMonitor healthMonitor;
+    private final GpsEventPipeline gpsPipeline;
 
     @Value("${spring.application.name:milkrun-backend}")
     private String appName;
 
     public ObservabilityController(
             EtaEngine etaEngine,
-            BloomFilterDedup dedup,
+            Deduplicator dedup,
             AnalyticsService analyticsService,
-            PipelineHealthMonitor healthMonitor) {
+            PipelineHealthMonitor healthMonitor,
+            GpsEventPipeline gpsPipeline) {
         this.etaEngine = etaEngine;
         this.dedup = dedup;
         this.analyticsService = analyticsService;
         this.healthMonitor = healthMonitor;
+        this.gpsPipeline = gpsPipeline;
     }
 
     @GetMapping("/health")
@@ -66,6 +70,7 @@ public class ObservabilityController {
         // Lifetime counters since the process started
         Map<String, Object> pipeline = new LinkedHashMap<>();
         pipeline.put("active_vans", etaEngine.getAllVanStates().size());
+        pipeline.put("dedup_strategy", dedup.strategy());
         pipeline.put("dedup_total_checked", dedup.getTotalChecked());
         pipeline.put("dedup_rejected", dedup.getDuplicatesRejected());
         pipeline.put("dedup_rejection_rate_pct",
@@ -76,6 +81,9 @@ public class ObservabilityController {
 
         // Rates over the recent window: what alerts should look at
         health.put("window", window.toMap());
+
+        // Device timestamp to published state; dominated by the reorder grace window
+        health.put("latency", gpsPipeline.latencySummary());
 
         health.put("calcite_ready", analyticsService.isReady());
 

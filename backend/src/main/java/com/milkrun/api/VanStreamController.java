@@ -3,7 +3,7 @@ package com.milkrun.api;
 import com.milkrun.consumer.GpsEventPipeline;
 import com.milkrun.engine.EtaEngine;
 import com.milkrun.model.VanState;
-import com.milkrun.pipeline.BloomFilterDedup;
+import com.milkrun.pipeline.Deduplicator;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -28,9 +28,9 @@ public class VanStreamController {
 
     private final GpsEventPipeline pipeline;
     private final EtaEngine etaEngine;
-    private final BloomFilterDedup dedup;
+    private final Deduplicator dedup;
 
-    public VanStreamController(GpsEventPipeline pipeline, EtaEngine etaEngine, BloomFilterDedup dedup) {
+    public VanStreamController(GpsEventPipeline pipeline, EtaEngine etaEngine, Deduplicator dedup) {
         this.pipeline = pipeline;
         this.etaEngine = etaEngine;
         this.dedup = dedup;

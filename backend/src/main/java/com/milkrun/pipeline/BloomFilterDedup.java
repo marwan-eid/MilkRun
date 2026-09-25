@@ -3,6 +3,7 @@ package com.milkrun.pipeline;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.BitSet;
@@ -30,7 +31,8 @@ import java.util.concurrent.atomic.AtomicLong;
  * last expectedInsertions events (they arrive within seconds in practice).
  */
 @Component
-public class BloomFilterDedup {
+@ConditionalOnProperty(name = "milkrun.pipeline.dedup-strategy", havingValue = "bloom")
+public class BloomFilterDedup implements Deduplicator {
 
     private static final Logger log = LoggerFactory.getLogger(BloomFilterDedup.class);
 
@@ -65,6 +67,7 @@ public class BloomFilterDedup {
      *
      * @return true if the event should be REJECTED (duplicate), false if new.
      */
+    @Override
     public boolean isDuplicate(String vanId, long sequenceNumber) {
         totalChecked.incrementAndGet();
         VanFilter filter = vanFilters.computeIfAbsent(vanId, k -> new VanFilter());
@@ -129,12 +132,19 @@ public class BloomFilterDedup {
         return hash;
     }
 
+    @Override
     public long getDuplicatesRejected() {
         return duplicatesRejected.get();
     }
 
+    @Override
     public long getTotalChecked() {
         return totalChecked.get();
+    }
+
+    @Override
+    public String strategy() {
+        return "bloom";
     }
 
     /** Number of filter generations rotated out across all vans. */

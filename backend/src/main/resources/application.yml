@@ -39,6 +39,9 @@ milkrun:
     # How often acknowledged offsets are committed
     commit-interval: 5s
   pipeline:
+    # window: exact sliding-window dedup (default); bloom: Bloom filter
+    dedup-strategy: window
+    dedup-window-size: 4096
     dedup-expected-insertions: 100000
     dedup-false-positive-rate: 0.001
     reorder-buffer-grace-ms: 3000

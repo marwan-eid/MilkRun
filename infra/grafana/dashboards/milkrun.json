@@ -352,6 +352,123 @@
     },
     {
       "type": "timeseries",
+      "title": "End-to-end latency (device reading to map)",
+      "description": "Mostly the 3 s reorder grace window.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(milkrun_pipeline_latency_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(milkrun_pipeline_latency_seconds_bucket[5m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(milkrun_pipeline_latency_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "Ingest lag (device reading to backend)",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(milkrun_pipeline_ingest_lag_seconds_bucket[5m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(milkrun_pipeline_ingest_lag_seconds_bucket[5m])))",
+          "legendFormat": "p99",
+          "refId": "B"
+        }
+      ],
+      "id": 8
+    },
+    {
+      "type": "timeseries",
       "title": "Vans by SLA risk",
       "description": "Risk of each van's next stop: slack between predicted arrival and deadline.",
       "datasource": {
@@ -360,7 +477,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -393,7 +510,7 @@
           "refId": "A"
         }
       ],
-      "id": 7
+      "id": 9
     },
     {
       "type": "timeseries",
@@ -405,7 +522,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 12,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -447,7 +564,7 @@
           "refId": "B"
         }
       ],
-      "id": 8
+      "id": 10
     },
     {
       "type": "timeseries",
@@ -459,7 +576,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -501,7 +618,7 @@
           "refId": "B"
         }
       ],
-      "id": 9
+      "id": 11
     },
     {
       "type": "timeseries",
@@ -513,7 +630,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -564,7 +681,7 @@
           "refId": "C"
         }
       ],
-      "id": 10
+      "id": 12
     },
     {
       "type": "timeseries",
@@ -576,7 +693,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 36,
         "w": 12,
         "h": 8
       },
@@ -618,7 +735,7 @@
           "refId": "B"
         }
       ],
-      "id": 11
+      "id": 13
     },
     {
       "type": "timeseries",
@@ -630,7 +747,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 28,
+        "y": 36,
         "w": 12,
         "h": 8
       },
@@ -672,7 +789,7 @@
           "refId": "B"
         }
       ],
-      "id": 12
+      "id": 14
     },
     {
       "type": "timeseries",
@@ -684,7 +801,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 44,
         "w": 12,
         "h": 8
       },
@@ -726,7 +843,7 @@
           "refId": "B"
         }
       ],
-      "id": 13
+      "id": 15
     },
     {
       "type": "timeseries",
@@ -738,7 +855,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 36,
+        "y": 44,
         "w": 12,
         "h": 8
       },
@@ -771,7 +888,7 @@
           "refId": "A"
         }
       ],
-      "id": 14
+      "id": 16
     }
   ],
   "templating": {

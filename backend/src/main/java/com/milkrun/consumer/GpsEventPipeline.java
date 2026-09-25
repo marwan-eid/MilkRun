@@ -5,12 +5,14 @@ import com.milkrun.engine.EtaEngine;
 import com.milkrun.model.GpsEvent;
 import com.milkrun.model.VanState;
 import com.milkrun.persistence.GpsArchiveRepository;
-import com.milkrun.pipeline.BloomFilterDedup;
+import com.milkrun.pipeline.Deduplicator;
 import com.milkrun.pipeline.IngestedGps;
 import com.milkrun.pipeline.ReorderBuffer;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.distribution.ValueAtPercentile;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +32,9 @@ import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 /**
  * GPS event pipeline.
@@ -57,7 +62,7 @@ public class GpsEventPipeline {
 
     private final KafkaReceiver<String, String> kafkaReceiver;
     private final ObjectMapper objectMapper;
-    private final BloomFilterDedup dedup;
+    private final Deduplicator dedup;
     private final ReorderBuffer<IngestedGps> reorderBuffer;
     private final EtaEngine etaEngine;
     private final GpsArchiveRepository archive;
@@ -77,6 +82,8 @@ public class GpsEventPipeline {
     private final Counter deserializationErrors;
     private final Counter eventsLate;
     private final Counter processingErrors;
+    private final Timer latency;
+    private final Timer ingestLag;
 
     private Disposable ingestion;
     private Disposable release;
@@ -84,7 +91,7 @@ public class GpsEventPipeline {
     public GpsEventPipeline(
             @Qualifier("gpsKafkaReceiver") KafkaReceiver<String, String> kafkaReceiver,
             ObjectMapper objectMapper,
-            BloomFilterDedup dedup,
+            Deduplicator dedup,
             EtaEngine etaEngine,
             GpsArchiveRepository archive,
             LateEventHandler lateEvents,
@@ -117,6 +124,16 @@ public class GpsEventPipeline {
                 .description("GPS events whose state could not be computed").register(meterRegistry);
         Gauge.builder("milkrun.reorder_buffer.size", reorderBuffer, ReorderBuffer::size)
                 .description("GPS events waiting in the reorder buffer").register(meterRegistry);
+        this.latency = Timer.builder("milkrun.pipeline.latency")
+                .description("Device timestamp to van state published (includes the reorder grace window)")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+        this.ingestLag = Timer.builder("milkrun.pipeline.ingest_lag")
+                .description("Device timestamp to the event reaching the backend (network, device buffering, Kafka)")
+                .publishPercentiles(0.5, 0.95, 0.99)
+                .publishPercentileHistogram()
+                .register(meterRegistry);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -166,6 +183,7 @@ public class GpsEventPipeline {
             return;
         }
 
+        ingestLag.record(nonNegative(Duration.between(event.deviceTimestamp(), Instant.now())));
         IngestedGps item = new IngestedGps(event, record.receiverOffset());
         if (!reorderBuffer.offer(item)) {
             eventsLate.increment();
@@ -180,6 +198,7 @@ public class GpsEventPipeline {
                 VanState state = etaEngine.processGpsEvent(item.event());
                 eventsProcessed.increment();
                 vanStateSink.tryEmitNext(state);
+                latency.record(nonNegative(item.age(Instant.now())));
                 archive.offer(item.event());
             } catch (Exception e) {
                 processingErrors.increment();
@@ -188,6 +207,26 @@ public class GpsEventPipeline {
                 item.ack();
             }
         }
+    }
+
+    private static Duration nonNegative(Duration d) {
+        return d.isNegative() ? Duration.ZERO : d;
+    }
+
+    /** Recent end-to-end and ingest latency percentiles in milliseconds, for the health endpoint. */
+    public Map<String, Object> latencySummary() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("end_to_end_ms", percentiles(latency));
+        out.put("ingest_ms", percentiles(ingestLag));
+        return out;
+    }
+
+    private static Map<String, Long> percentiles(Timer timer) {
+        Map<String, Long> p = new LinkedHashMap<>();
+        for (ValueAtPercentile v : timer.takeSnapshot().percentileValues()) {
+            p.put("p" + Math.round(v.percentile() * 100), Math.round(v.value(TimeUnit.MILLISECONDS)));
+        }
+        return p;
     }
 
     /**
