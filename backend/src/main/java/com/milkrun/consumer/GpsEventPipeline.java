@@ -45,8 +45,9 @@ import java.util.concurrent.TimeUnit;
  * </pre>
  *
  * Every record's offset is acknowledged only when the record has been dealt
- * with: after its state was published, or when it is dropped as a duplicate
- * or malformed, or once a late event has been dead-lettered. Offsets are
+ * with: after its state was published, when it is dropped as a duplicate,
+ * once a malformed record has been forwarded to the dead-letter topic, or once
+ * a late event has been reconciled into the archive and logged. Offsets are
  * acknowledged out of order (events wait in the buffer), so the receiver is
  * configured with deferred commits: a partition's committed offset only moves
  * past records that are done. After a crash the consumer resumes from there
@@ -67,6 +68,7 @@ public class GpsEventPipeline {
     private final EtaEngine etaEngine;
     private final GpsArchiveRepository archive;
     private final LateEventHandler lateEvents;
+    private final KafkaDeadLetterPublisher kafkaDeadLetters;
     private final long sampleIntervalMs;
     private final Duration releaseInterval;
     private final Scheduler releaseScheduler = Schedulers.newSingle("gps-release");
@@ -95,6 +97,7 @@ public class GpsEventPipeline {
             EtaEngine etaEngine,
             GpsArchiveRepository archive,
             LateEventHandler lateEvents,
+            KafkaDeadLetterPublisher kafkaDeadLetters,
             MeterRegistry meterRegistry,
             @Value("${milkrun.pipeline.reorder-buffer-grace-ms:3000}") long graceMs,
             @Value("${milkrun.pipeline.reorder-buffer-max-size:50}") int maxBufferSize,
@@ -107,6 +110,7 @@ public class GpsEventPipeline {
         this.etaEngine = etaEngine;
         this.archive = archive;
         this.lateEvents = lateEvents;
+        this.kafkaDeadLetters = kafkaDeadLetters;
         this.releaseInterval = Duration.ofMillis(releaseIntervalMs);
         this.sampleIntervalMs = sampleIntervalMs;
 
@@ -172,8 +176,10 @@ public class GpsEventPipeline {
             }
         } catch (Exception e) {
             deserializationErrors.increment();
-            log.warn("Dropping malformed GPS record at {}: {}", record.receiverOffset(), e.getMessage());
-            record.receiverOffset().acknowledge();
+            log.warn("Forwarding malformed GPS record at {} to the DLQ topic: {}", record.receiverOffset(), e.getMessage());
+            kafkaDeadLetters.publish(record, e.getClass().getSimpleName() + ": " + e.getMessage())
+                    .doFinally(signal -> record.receiverOffset().acknowledge())
+                    .subscribe();
             return;
         }
 

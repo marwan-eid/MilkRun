@@ -106,6 +106,14 @@ public class GpsArchiveRepository {
         }
     }
 
+    /**
+     * Writes one point immediately, bypassing sampling (used to reconcile late
+     * events into the track). Idempotent on event_id.
+     */
+    public Mono<Void> insertNow(GpsEvent event) {
+        return insert(List.of(event));
+    }
+
     private Mono<Void> insert(List<GpsEvent> batch) {
         return databaseClient.inConnection(connection -> {
             Statement statement = connection.createStatement(INSERT);

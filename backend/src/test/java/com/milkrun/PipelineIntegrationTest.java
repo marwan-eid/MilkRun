@@ -3,6 +3,7 @@ package com.milkrun;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.milkrun.consumer.GpsEventPipeline;
+import com.milkrun.consumer.KafkaDeadLetterPublisher;
 import com.milkrun.model.DeliveryEvent;
 import com.milkrun.model.DeliveryEventType;
 import com.milkrun.model.GpsEvent;
@@ -12,12 +13,16 @@ import com.milkrun.model.VanState;
 import com.milkrun.model.VanStatus;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -213,10 +218,14 @@ class PipelineIntegrationTest {
             sub.dispose();
         }
 
-        // An event older than what was already released is dead-lettered, not shown
-        send("gps-events", van, gps(van, route, 999, Instant.now().minusSeconds(60), 0));
+        // An event older than what was already released is not shown live, but it is
+        // reconciled into the archive and logged as a reconciled dead letter
+        GpsEvent late = gps(van, route, 999, Instant.now().minusSeconds(60), 0);
+        send("gps-events", van, late);
         await().atMost(Duration.ofSeconds(15)).until(() -> queryLong(
-                "SELECT count(*) FROM dead_letter_log WHERE van_id = '" + van + "' AND error_reason = 'LATE_ARRIVAL'") == 1);
+                "SELECT count(*) FROM dead_letter_log WHERE van_id = '" + van
+                        + "' AND error_reason = 'LATE_ARRIVAL' AND reconciled AND reconciled_at IS NOT NULL") == 1);
+        assertEquals(1, queryLong("SELECT count(*) FROM gps_archive WHERE event_id = '" + late.eventId() + "'"));
     }
 
     @Test
@@ -236,12 +245,38 @@ class PipelineIntegrationTest {
     }
 
     @Test
-    void malformedGpsRecordsAreCountedAndSkipped() throws Exception {
+    void malformedGpsRecordsGoToTheDeadLetterTopic() throws Exception {
         double before = counter("milkrun.events.deserialization_errors");
         RecordMetadata bad = send("gps-events", "van-it-bad", "{not json");
         TopicPartition tp = new TopicPartition(bad.topic(), bad.partition());
         await().atMost(Duration.ofSeconds(20)).until(() -> counter("milkrun.events.deserialization_errors") > before);
+
+        try (KafkaConsumer<String, String> dlq = new KafkaConsumer<>(Map.of(
+                ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers(),
+                ConsumerConfig.GROUP_ID_CONFIG, "it-dlq-" + UUID.randomUUID(),
+                ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest",
+                ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
+                ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class))) {
+            dlq.subscribe(List.of("gps-events-dlq"));
+            List<ConsumerRecord<String, String>> found = new ArrayList<>();
+            await().atMost(Duration.ofSeconds(20)).until(() -> {
+                dlq.poll(Duration.ofMillis(500)).forEach(r -> {
+                    if ("van-it-bad".equals(r.key())) found.add(r);
+                });
+                return !found.isEmpty();
+            });
+            ConsumerRecord<String, String> r = found.get(0);
+            assertEquals("{not json", r.value(), "forwarded unchanged");
+            assertEquals("gps-events", header(r, KafkaDeadLetterPublisher.HEADER_TOPIC));
+            assertEquals(Long.toString(bad.offset()), header(r, KafkaDeadLetterPublisher.HEADER_OFFSET));
+            assertTrue(header(r, KafkaDeadLetterPublisher.HEADER_ERROR).contains("JsonParseException"));
+        }
         await().atMost(Duration.ofSeconds(20)).until(() -> committedOffset("milkrun-engine", tp) > bad.offset());
+    }
+
+    private static String header(ConsumerRecord<String, String> r, String name) {
+        var h = r.headers().lastHeader(name);
+        return h == null ? null : new String(h.value(), java.nio.charset.StandardCharsets.UTF_8);
     }
 
     // ═══════════════════ Delivery path ═══════════════════

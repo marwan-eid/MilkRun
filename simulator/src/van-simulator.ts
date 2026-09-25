@@ -5,7 +5,7 @@ import {
 } from './models/index.js';
 import { calculateBearing, cumulativeDistances, lerp, speedFactorAt } from './geo.js';
 import { type Router, travelSeconds } from './route-generator.js';
-import { maybeDuplicate, EventReorderer, ConnectionDropper } from './chaos/index.js';
+import { DeviceLink, type DeviceLinkConfig, type Scheduler } from './chaos/index.js';
 
 /** What the simulator needs from the Kafka producer (an interface so tests can record instead). */
 export interface EventSink {
@@ -25,6 +25,10 @@ export interface VanSimulatorConfig {
     deliveryDurationMinSec: number;
     deliveryDurationMaxSec: number;
     chaosEnabled: boolean;
+    /** Network behaviour when chaos is enabled. */
+    link?: Partial<DeviceLinkConfig>;
+    /** Timer used by the network link (tests pass a fake). */
+    schedule?: Scheduler;
     /** Router used to compute detours for inserted stops. */
     router?: Router;
     /** Called once the van has emitted its final RETURNED ping. */
@@ -87,8 +91,7 @@ export class VanSimulator {
     private intervalId: ReturnType<typeof setInterval> | null = null;
     private ticking = false;
 
-    private readonly reorderer = new EventReorderer();
-    private readonly dropper = new ConnectionDropper();
+    private readonly link: DeviceLink | null;
 
     constructor(route: VanRoute, sink: EventSink, config: Partial<VanSimulatorConfig> = {}) {
         this.route = route;
@@ -96,6 +99,9 @@ export class VanSimulator {
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.now = this.config.now ?? Date.now;
         this.random = this.config.random ?? Math.random;
+        this.link = this.config.chaosEnabled
+            ? new DeviceLink((events) => this.sink.sendGpsEvents(events), this.config.link, this.config.schedule, this.random)
+            : null;
         this.cum = cumulativeDistances(route.waypoints);
         // Seed with epoch millis so a respawned van keeps increasing sequence
         // numbers (the backend dedups on van_id + sequence_number).
@@ -120,16 +126,13 @@ export class VanSimulator {
         await this.sink.sendRoutePlan(this.routePlan());
     }
 
-    /** Stops the timer and flushes any GPS events still held by the chaos reorderer. */
+    /** Stops the timer and delivers anything the network link still holds. */
     async stop(): Promise<void> {
         if (this.intervalId) {
             clearInterval(this.intervalId);
             this.intervalId = null;
         }
-        const remaining = this.reorderer.flush();
-        if (remaining.length > 0) {
-            await this.sink.sendGpsEvents(remaining);
-        }
+        await this.link?.close();
         if (this.status !== 'RETURNED') this.status = 'IDLE';
     }
 
@@ -289,25 +292,15 @@ export class VanSimulator {
         };
     }
 
-    /** Sends a GPS ping through the chaos modules (drop, duplicate, reorder). */
+    /** Sends a GPS ping, through the simulated cellular link when chaos is on. */
     private async emitGps(event: GpsEvent): Promise<void> {
-        if (!this.config.chaosEnabled) {
+        if (!this.link) {
             await this.sink.sendGpsEvents([event]);
-            return;
-        }
-        // The final RETURNED ping is never dropped or delayed: it tells the
-        // backend the route is over.
-        if (event.status === 'RETURNED') {
-            const flushed = this.reorderer.flush();
-            await this.sink.sendGpsEvents([...flushed, event]);
-            return;
-        }
-        if (this.dropper.shouldDrop()) return;
-        for (const e of maybeDuplicate(event)) {
-            const flushed = this.reorderer.push(e);
-            if (flushed.length > 0) {
-                await this.sink.sendGpsEvents(flushed);
-            }
+        } else if (event.status === 'RETURNED') {
+            // The final ping tells the backend the route is over: it goes last.
+            await this.link.final(event);
+        } else {
+            this.link.ping(event);
         }
     }
 

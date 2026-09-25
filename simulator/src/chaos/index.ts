@@ -1,3 +1,2 @@
 export { maybeDuplicate, type DuplicatorConfig } from './duplicator.js';
-export { EventReorderer, type ReordererConfig } from './reorderer.js';
-export { ConnectionDropper, type DropperConfig } from './dropper.js';
+export { DeviceLink, DEFAULT_LINK_CONFIG, type DeviceLinkConfig, type Scheduler, type LinkStats } from './device-link.js';

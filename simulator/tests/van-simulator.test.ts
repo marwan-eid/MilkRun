@@ -172,6 +172,24 @@ describe('VanSimulator', () => {
         expect(outside.filter((e) => e.speed_kmh === 36).length).toBeGreaterThan(outside.length - 2);
     });
 
+    it('with chaos on, still delivers every ping and sends RETURNED last', async () => {
+        const sim = new VanSimulator(makeRoute(PLAIN), sink, {
+            pingIntervalMs: TICK_MS, timeScale: 4, baseSpeedKmh: 36, chaosEnabled: true,
+            now: () => t, random: () => 0.5,
+            // Deliver immediately; retries on every ping; no dead zones
+            schedule: (fn) => fn(),
+            link: { deadZoneProbability: 0, duplicates: { duplicateProbability: 1, maxDuplicates: 1 } },
+        });
+        await sim.begin();
+        await runToEnd(sim);
+        await sim.stop();
+
+        const unique = new Set(sink.gps.map((e) => e.sequence_number));
+        expect(sink.gps.length).toBe(2 * unique.size - 1); // every ping twice except the final one
+        expect(sink.gps.at(-1)!.status).toBe('RETURNED');
+        expect(sink.gps.filter((e) => e.status === 'RETURNED')).toHaveLength(1);
+    });
+
     describe('insertStop', () => {
         const side: Waypoint = { latitude: 52.3030, longitude: 4.8540 };
 
