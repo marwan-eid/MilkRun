@@ -124,6 +124,116 @@
       "id": 2
     },
     {
+      "type": "stat",
+      "title": "Vans projected late",
+      "description": "Vans whose predicted arrival at their next stop is after the stop's deadline.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 3
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(milkrun_vans_sla_risk{level=\"CRITICAL\"})",
+          "refId": "A"
+        }
+      ],
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "ETA error p50",
+      "description": "Median absolute error of the ETA predicted when a van set off for a stop, measured on arrival.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "area"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(milkrun_eta_error_seconds{quantile=\"0.5\"})",
+          "refId": "A"
+        }
+      ],
+      "id": 4
+    },
+    {
       "type": "timeseries",
       "title": "GPS pipeline throughput",
       "description": "",
@@ -184,7 +294,7 @@
           "refId": "C"
         }
       ],
-      "id": 3
+      "id": 5
     },
     {
       "type": "timeseries",
@@ -238,7 +348,106 @@
           "refId": "B"
         }
       ],
-      "id": 4
+      "id": 6
+    },
+    {
+      "type": "timeseries",
+      "title": "Vans by SLA risk",
+      "description": "Risk of each van's next stop: slack between predicted arrival and deadline.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (level) (milkrun_vans_sla_risk)",
+          "legendFormat": "{{level}}",
+          "refId": "A"
+        }
+      ],
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "ETA error",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(milkrun_eta_error_seconds{quantile=\"0.5\"})",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(milkrun_eta_error_seconds{quantile=\"0.9\"})",
+          "legendFormat": "p90",
+          "refId": "B"
+        }
+      ],
+      "id": 8
     },
     {
       "type": "timeseries",
@@ -250,7 +459,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -292,11 +501,11 @@
           "refId": "B"
         }
       ],
-      "id": 5
+      "id": 9
     },
     {
       "type": "timeseries",
-      "title": "ETA circuit breaker fallbacks",
+      "title": "ETA straight-line fallbacks",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -304,7 +513,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 12,
+        "y": 20,
         "w": 12,
         "h": 8
       },
@@ -333,11 +542,20 @@
             "uid": "prometheus"
           },
           "expr": "sum(rate(milkrun_circuit_breaker_fallbacks_total[5m]))",
-          "legendFormat": "fallbacks/s",
+          "legendFormat": "estimator failed / breaker open",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(milkrun_eta_off_route_total[5m]))",
+          "legendFormat": "van off planned route",
+          "refId": "B"
         }
       ],
-      "id": 6
+      "id": 10
     },
     {
       "type": "timeseries",
@@ -349,7 +567,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -391,7 +609,7 @@
           "refId": "B"
         }
       ],
-      "id": 7
+      "id": 11
     },
     {
       "type": "timeseries",
@@ -403,7 +621,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -436,7 +654,7 @@
           "refId": "A"
         }
       ],
-      "id": 8
+      "id": 12
     }
   ],
   "templating": {

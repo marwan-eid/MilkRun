@@ -300,7 +300,7 @@ body {
 
 .van-card-body {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 4px;
 }
 
@@ -1013,7 +1013,7 @@ body {
   }
 
   .van-card-body {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 2px;
   }
 

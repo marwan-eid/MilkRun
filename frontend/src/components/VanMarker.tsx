@@ -2,6 +2,7 @@ import { memo, useMemo, useRef, useEffect } from 'react';
 import { Marker, Popup, Tooltip } from 'react-leaflet';
 import L from 'leaflet';
 import type { VanState, SlaRisk, VanStatus } from '../types/van';
+import { formatEta, formatSlack } from '../lib/format';
 
 interface VanMarkerProps {
     van: VanState;
@@ -43,14 +44,6 @@ function createVanIcon(color: string, isSelected: boolean, inGeofence: boolean):
       </svg>
     `,
     });
-}
-
-/** Format seconds into "Xm Ys" */
-function formatEta(seconds: number): string {
-    if (seconds <= 0) return 'Arrived';
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 export const VanMarker = memo(function VanMarker({ van, isSelected, onClick }: VanMarkerProps) {
@@ -113,6 +106,7 @@ export const VanMarker = memo(function VanMarker({ van, isSelected, onClick }: V
                             <tr><td>Stop</td><td>{van.current_stop_index + 1}/{van.total_stops}</td></tr>
                             <tr><td>ETA</td><td>{formatEta(van.eta_next_stop_seconds)}</td></tr>
                             <tr><td>SLA</td><td>{van.sla_risk}</td></tr>
+                            <tr><td>Slack</td><td>{formatSlack(van.sla_slack_seconds)}</td></tr>
                             <tr><td>Confidence</td><td>{van.confidence}</td></tr>
                             {van.in_geofence && (
                                 <tr><td>Zone</td><td>⚡ {van.geofence_name}</td></tr>

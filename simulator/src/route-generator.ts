@@ -1,26 +1,25 @@
 import { type Waypoint, type RouteStop, type VanRoute } from './models/index.js';
+import { cumulativeDistances, densify, haversineMeters } from './geo.js';
+
+export { haversineDistance, calculateBearing } from './geo.js';
 
 // ═══════════════════════════════════════════════════════════
-// Amsterdam area delivery neighborhoods with realistic coordinates
+// Amsterdam delivery area
 // ═══════════════════════════════════════════════════════════
 
-/** 
- * Decentralized Micro-Hubs (Vans start and end here based on assigned quadrant)
- * This disperses the vans across Amsterdam rather than chaining them from a single endpoint.
- */
-const HUBS: Waypoint[] = [
-    { latitude: 52.3548, longitude: 4.9578 }, // East (Original Science Park)
+/** Micro-hubs. Van i starts and ends near hub i % 4, so vans spread across the city. */
+export const HUBS: Waypoint[] = [
+    { latitude: 52.3548, longitude: 4.9578 }, // East (Science Park)
     { latitude: 52.3950, longitude: 4.8970 }, // North (NDSM Wharf area)
     { latitude: 52.3420, longitude: 4.8700 }, // South (Zuidas District)
     { latitude: 52.3700, longitude: 4.8350 }, // West (Rembrandtpark area)
 ];
 
 /**
- * Delivery neighborhoods around Amsterdam.
- * Each neighborhood has a center and a radius (in degrees ≈ ~100-300m)
- * that we scatter delivery stops around.
+ * Delivery neighborhoods. Stops are scattered uniformly inside `radius`
+ * degrees (~250-900 m) of each center.
  */
-const NEIGHBORHOODS = [
+export const NEIGHBORHOODS = [
     { name: 'De Pijp', center: { latitude: 52.3520, longitude: 4.8930 }, radius: 0.005 },
     { name: 'Jordaan', center: { latitude: 52.3740, longitude: 4.8830 }, radius: 0.004 },
     { name: 'Oud-West', center: { latitude: 52.3650, longitude: 4.8700 }, radius: 0.005 },
@@ -33,189 +32,266 @@ const NEIGHBORHOODS = [
     { name: 'Rivierenbuurt', center: { latitude: 52.3450, longitude: 4.9050 }, radius: 0.004 },
 ];
 
+// ═══════════════════════════════════════════════════════════
+// Routing
+// ═══════════════════════════════════════════════════════════
+
+/** A drivable path through a list of points. */
+export interface RoutedPath {
+    waypoints: Waypoint[];
+    /** legEndIndices[i] is the waypoint index where the path reaches points[i + 1]. */
+    legEndIndices: number[];
+    source: 'osrm' | 'straight-line';
+}
+
+export interface Router {
+    route(points: Waypoint[]): Promise<RoutedPath>;
+}
+
+/** Straight segments with a vertex every ~50 m. Used offline and as the OSRM fallback. */
+export class StraightLineRouter implements Router {
+    async route(points: Waypoint[]): Promise<RoutedPath> {
+        return straightLinePath(points);
+    }
+}
+
+export function straightLinePath(points: Waypoint[]): RoutedPath {
+    const waypoints: Waypoint[] = [points[0]];
+    const legEndIndices: number[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+        waypoints.push(...densify(points[i], points[i + 1]).slice(1));
+        legEndIndices.push(waypoints.length - 1);
+    }
+    return { waypoints, legEndIndices, source: 'straight-line' };
+}
+
+type FetchFn = (url: string, init?: { signal?: AbortSignal }) => Promise<{
+    ok: boolean;
+    status: number;
+    json(): Promise<any>;
+}>;
+
 /**
- * Generate a random point near a center within a given radius.
+ * Street geometry from an OSRM server. Falls back to straight lines when the
+ * server is unreachable or rate-limits us (the public demo server allows about
+ * one request per second).
  */
-function scatterPoint(center: Waypoint, radius: number): Waypoint {
-    const angle = Math.random() * 2 * Math.PI;
-    const r = radius * Math.sqrt(Math.random()); // uniform distribution in circle
+export class OsrmRouter implements Router {
+    constructor(
+        private readonly baseUrl: string = process.env.OSRM_URL || 'https://router.project-osrm.org',
+        private readonly fetchImpl: FetchFn = fetch,
+        private readonly timeoutMs = 10_000,
+    ) { }
+
+    async route(points: Waypoint[]): Promise<RoutedPath> {
+        const coords = points.map((p) => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
+        const url = `${this.baseUrl}/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+        try {
+            const response = await this.fetchImpl(url, { signal: AbortSignal.timeout(this.timeoutMs) });
+            if (!response.ok) {
+                console.warn(`OSRM returned HTTP ${response.status}; using straight-line geometry.`);
+                return straightLinePath(points);
+            }
+            const data = await response.json();
+            const route = data?.routes?.[0];
+            if (!route || !Array.isArray(route.legs) || route.legs.length !== points.length - 1) {
+                return straightLinePath(points);
+            }
+            const waypoints: Waypoint[] = route.geometry.coordinates.map((c: number[]) => ({
+                longitude: c[0],
+                latitude: c[1],
+            }));
+            if (waypoints.length < 2) {
+                return straightLinePath(points);
+            }
+            const snapped: Waypoint[] | undefined = Array.isArray(data.waypoints) && data.waypoints.length === points.length
+                ? data.waypoints.map((w: { location: number[] }) => ({ longitude: w.location[0], latitude: w.location[1] }))
+                : undefined;
+            const legEndIndices = matchLegEnds(waypoints, route.legs.map((l: { distance: number }) => l.distance), snapped);
+            return { waypoints, legEndIndices, source: 'osrm' };
+        } catch (e) {
+            console.warn(`OSRM unreachable (${(e as Error).message}); using straight-line geometry.`);
+            return straightLinePath(points);
+        }
+    }
+}
+
+/**
+ * Finds the polyline vertex where each OSRM leg ends. The leg distances say how
+ * far along the geometry each leg ends; within a few vertices of that distance
+ * we take the vertex closest to the snapped waypoint. Indices never decrease,
+ * and the last leg always ends at the final vertex.
+ */
+export function matchLegEnds(waypoints: Waypoint[], legDistances: number[], snapped?: Waypoint[]): number[] {
+    const cum = cumulativeDistances(waypoints);
+    const last = waypoints.length - 1;
+    const scale = legDistances.reduce((a, b) => a + b, 0) > 0
+        ? cum[last] / legDistances.reduce((a, b) => a + b, 0)
+        : 1;
+    const ends: number[] = [];
+    let target = 0;
+    let prev = 0;
+    for (let i = 0; i < legDistances.length; i++) {
+        if (i === legDistances.length - 1) {
+            ends.push(last);
+            break;
+        }
+        target += legDistances[i] * scale;
+        let idx = prev;
+        while (idx < last && cum[idx + 1] <= target) idx++;
+        if (idx < last && Math.abs(cum[idx + 1] - target) < Math.abs(cum[idx] - target)) idx++;
+        const point = snapped?.[i + 1];
+        if (point) {
+            let best = idx;
+            let bestDist = haversineMeters(waypoints[idx], point);
+            for (let j = Math.max(prev, idx - 15); j <= Math.min(last, idx + 15); j++) {
+                const d = haversineMeters(waypoints[j], point);
+                if (d < bestDist) {
+                    best = j;
+                    bestDist = d;
+                }
+            }
+            idx = best;
+        }
+        idx = Math.max(idx, prev);
+        ends.push(idx);
+        prev = idx;
+    }
+    return ends;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Route construction
+// ═══════════════════════════════════════════════════════════
+
+export interface RouteOptions {
+    router: Router;
+    /** Simulated seconds per wall-clock second. */
+    timeScale: number;
+    /** Free-flow driving speed in simulated km/h, used to plan arrival times. */
+    baseSpeedKmh: number;
+    /** Expected time spent at each stop, simulated seconds. */
+    expectedDwellSec?: number;
+    /** Share of stops whose delivery slot leaves almost no slack. */
+    tightSlotShare?: number;
+    now?: Date;
+    random?: () => number;
+}
+
+/** Uniform random point in a circle of `radius` degrees. */
+function scatterPoint(center: Waypoint, radius: number, random: () => number): Waypoint {
+    const angle = random() * 2 * Math.PI;
+    const r = radius * Math.sqrt(random());
     return {
         latitude: center.latitude + r * Math.cos(angle),
         longitude: center.longitude + r * Math.sin(angle),
     };
 }
 
-/**
- * Calculate compass bearing from point A to B (in degrees).
- */
-export function calculateBearing(from: Waypoint, to: Waypoint): number {
-    const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
-    const lat1 = (from.latitude * Math.PI) / 180;
-    const lat2 = (to.latitude * Math.PI) / 180;
-    const y = Math.sin(dLon) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-    return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
-}
-
-/**
- * Haversine distance between two points in km.
- */
-export function haversineDistance(a: Waypoint, b: Waypoint): number {
-    const R = 6371; // Earth radius in km
-    const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
-    const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
-    const lat1 = (a.latitude * Math.PI) / 180;
-    const lat2 = (b.latitude * Math.PI) / 180;
-    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-/**
- * Interpolate dense waypoints between two locations.
- * Creates points roughly every ~50 meters for smooth animation.
- */
-function interpolateWaypoints(from: Waypoint, to: Waypoint): Waypoint[] {
-    const dist = haversineDistance(from, to);
-    const numPoints = Math.max(2, Math.ceil(dist / 0.05)); // ~50m intervals
-    const waypoints: Waypoint[] = [];
-
-    for (let i = 0; i <= numPoints; i++) {
-        const t = i / numPoints;
-        waypoints.push({
-            latitude: from.latitude + t * (to.latitude - from.latitude),
-            longitude: from.longitude + t * (to.longitude - from.longitude),
+/** Greedy nearest-neighbour ordering starting from `from`. */
+function nearestNeighbourOrder<T>(from: Waypoint, items: T[], locate: (t: T) => Waypoint): T[] {
+    const remaining = [...items];
+    const ordered: T[] = [];
+    let current = from;
+    while (remaining.length > 0) {
+        let bestIdx = 0;
+        let best = Infinity;
+        remaining.forEach((item, i) => {
+            const d = haversineMeters(current, locate(item));
+            if (d < best) {
+                best = d;
+                bestIdx = i;
+            }
         });
+        const [next] = remaining.splice(bestIdx, 1);
+        ordered.push(next);
+        current = locate(next);
     }
-
-    return waypoints;
+    return ordered;
 }
 
 /**
- * Fetch a completely realistic polyline from the Open Source Routing Machine
- * projecting the driving route over physical street geometry.
+ * Simulated seconds to drive from vertex `from` to vertex `to` at `speedKmh`.
  */
-export async function fetchOsrmRoute(points: Waypoint[]): Promise<Waypoint[]> {
-    const coords = points.map(p => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
-    const url = `http://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
-
-    try {
-        const response = await fetch(url);
-        if (!response.ok) {
-            console.warn(`OSRM API Error: ${response.status} - Falling back to Cartesian geometry.`);
-            return fallbackOsrmRoute(points);
-        }
-
-        const data = await response.json();
-        if (!data.routes || data.routes.length === 0) {
-            return fallbackOsrmRoute(points);
-        }
-
-        const geo = data.routes[0].geometry.coordinates; // [ [lon, lat], ... ]
-        return geo.map((c: number[]) => ({
-            longitude: c[0],
-            latitude: c[1]
-        }));
-    } catch (e) {
-        console.warn(`OSRM API Offline: Falling back to Cartesian geometry.`);
-        return fallbackOsrmRoute(points);
-    }
-}
-
-/** Fallback method routing points together linearly if OSRM rejects the HTTP payload (e.g. Rate Limit IP Ban) */
-function fallbackOsrmRoute(points: Waypoint[]): Waypoint[] {
-    const waypoints: Waypoint[] = [];
-    for (let i = 0; i < points.length - 1; i++) {
-        const segment = interpolateWaypoints(points[i], points[i + 1]);
-        waypoints.push(...(i === 0 ? segment : segment.slice(1)));
-    }
-    return waypoints;
+export function travelSeconds(cum: number[], from: number, to: number, speedKmh: number): number {
+    return Math.max(0, cum[to] - cum[from]) / (speedKmh / 3.6);
 }
 
 /**
- * Generate a unique customer ID for a stop.
+ * Builds a van's route: 2-4 neighborhoods visited in nearest-neighbour order,
+ * stops ordered nearest-neighbour inside each, street geometry from the router,
+ * and a delivery slot per stop.
+ *
+ * Planned arrivals assume free-flow speed and the expected dwell time. Most
+ * slots leave 3-10 simulated minutes of slack; `tightSlotShare` of them leave
+ * between -1 and +1.5 minutes, so traffic in the delay zones or an inserted
+ * ad-hoc stop can push them past their deadline.
  */
-function generateCustomerId(vanIndex: number, stopIndex: number): string {
-    return `cust-${String(vanIndex).padStart(3, '0')}-${String(stopIndex).padStart(2, '0')}`;
-}
+export async function generateRoute(vanIndex: number, totalStops: number, opts: RouteOptions): Promise<VanRoute> {
+    const random = opts.random ?? Math.random;
+    const now = opts.now ?? new Date();
+    const expectedDwellSec = opts.expectedDwellSec ?? 40;
+    const tightSlotShare = opts.tightSlotShare ?? 0.15;
 
-/**
- * Generate a single van's route with realistic Amsterdam stops.
- */
-export async function generateRoute(vanIndex: number, totalStops: number): Promise<VanRoute> {
-    const today = new Date().toISOString().slice(0, 10);
     const vanId = `van-${String(vanIndex).padStart(3, '0')}`;
-    const runId = Math.floor(Date.now() / 1000).toString();
-    const routeId = `route-${today}-${vanId}-${runId}`;
+    const routeId = `route-${now.toISOString().slice(0, 10)}-${vanId}-${Math.floor(now.getTime() / 1000)}`;
 
     // Pick 2-4 random neighborhoods (unbiased Fisher-Yates shuffle)
     const shuffled = [...NEIGHBORHOODS];
     for (let j = shuffled.length - 1; j > 0; j--) {
-        const r = Math.floor(Math.random() * (j + 1));
+        const r = Math.floor(random() * (j + 1));
         [shuffled[j], shuffled[r]] = [shuffled[r], shuffled[j]];
     }
-    const assignedNeighborhoods = shuffled.slice(0, 2 + Math.floor(Math.random() * 3));
+    const chosen = shuffled.slice(0, 2 + Math.floor(random() * 3));
 
-    // Distribute stops across the selected neighborhoods
+    const hub = HUBS[vanIndex % HUBS.length];
+    const origin = scatterPoint(hub, 0.015, random);
+    const destination = scatterPoint(hub, 0.015, random);
+
+    // Scatter stops, then order: neighborhoods nearest-first, stops nearest-first within each
+    const byNeighborhood = chosen.map((n, i) => ({
+        center: n.center,
+        stops: Array.from({ length: Math.floor(totalStops / chosen.length) + (i < totalStops % chosen.length ? 1 : 0) },
+            () => scatterPoint(n.center, n.radius, random)),
+    }));
+    const locations: Waypoint[] = [];
+    let cursor = origin;
+    for (const n of nearestNeighbourOrder(origin, byNeighborhood, (x) => x.center)) {
+        const ordered = nearestNeighbourOrder(cursor, n.stops, (p) => p);
+        locations.push(...ordered);
+        if (ordered.length > 0) cursor = ordered[ordered.length - 1];
+    }
+
+    const path = await opts.router.route([origin, ...locations, destination]);
+    const cum = cumulativeDistances(path.waypoints);
+
     const stops: RouteStop[] = [];
-    const now = new Date();
-
-    for (let i = 0; i < totalStops; i++) {
-        const neighborhood = assignedNeighborhoods[i % assignedNeighborhoods.length];
-        const location = scatterPoint(neighborhood.center, neighborhood.radius);
-
-        // Assign SLA 90 seconds per stop into the future coupled with a base buffer. 
-        // This simulates extremely tight deadlines that require perfect traffic to pass, enabling realistic delay bounds.
-        const slaDeadline = new Date(now.getTime() + (i * 90 * 1000) + 120000);
-
+    let plannedSec = 0;
+    let prevVertex = 0;
+    locations.forEach((location, i) => {
+        const vertex = path.legEndIndices[i];
+        plannedSec += travelSeconds(cum, prevVertex, vertex, opts.baseSpeedKmh) + (i > 0 ? expectedDwellSec : 0);
+        prevVertex = vertex;
+        const slackSec = random() < tightSlotShare
+            ? -60 + random() * 150
+            : 180 + random() * 420;
+        const plannedArrival = new Date(now.getTime() + (plannedSec / opts.timeScale) * 1000);
         stops.push({
             stop_index: i,
-            customer_id: generateCustomerId(vanIndex, i),
+            customer_id: `cust-${String(vanIndex).padStart(3, '0')}-${String(i).padStart(2, '0')}`,
             location,
-            sla_deadline: slaDeadline.toISOString(),
-            parcels: 1 + Math.floor(Math.random() * 5),
+            planned_arrival: plannedArrival.toISOString(),
+            sla_deadline: new Date(plannedArrival.getTime() + (slackSec / opts.timeScale) * 1000).toISOString(),
+            parcels: 1 + Math.floor(random() * 5),
+            waypoint_index: vertex,
         });
-    }
+    });
 
-    // Each van starts from one of the micro-hubs (round-robin by van index)
-    const baseHub = HUBS[vanIndex % HUBS.length];
-
-    // Scatter start/end points by up to ~1.5 km so vans from the same hub do not
-    // all drive the exact same streets.
-    const originHub = scatterPoint(baseHub, 0.015);
-    const returningHub = scatterPoint(baseHub, 0.015);
-
-    // Build dense waypoints via OSRM uniformly: Scattered Park → stop[0] → stop[1] → ... → stop[n] → Scattered Return
-    const allPoints: Waypoint[] = [originHub, ...stops.map((s) => s.location), returningHub];
-
-    // Fetch real geography streets polyline
-    const waypoints = await fetchOsrmRoute(allPoints);
-
-    return { route_id: routeId, van_id: vanId, stops, waypoints };
-}
-
-/**
- * Generate routes for the entire fleet sequentially to respect OSRM HTTP throttles.
- */
-export async function generateFleetRoutes(
-    vanCount: number,
-    stopsPerVan: number = 18,
-    onRouteGenerated?: (route: VanRoute) => void
-): Promise<VanRoute[]> {
-    const routes: VanRoute[] = [];
-    for (let i = 0; i < vanCount; i++) {
-        const stops = stopsPerVan - 4 + Math.floor(Math.random() * 9); // 14–22 stops
-        const route = await generateRoute(i, stops);
-        routes.push(route);
-
-        if (onRouteGenerated) onRouteGenerated(route);
-        // Print progress directly to the console so the user knows we didn't freeze
-        if (i % 5 === 0) {
-            console.log(`   ... fetched mapping geometries for ${i + 1}/${vanCount} vans`);
-        }
-        // 1.5 s between requests to respect the public OSRM server rate limit.
-        if (i < vanCount - 1) {
-            await new Promise(r => setTimeout(r, 1500));
-        }
-    }
-    return routes;
+    return {
+        route_id: routeId,
+        van_id: vanId,
+        created_at: now.toISOString(),
+        stops,
+        waypoints: path.waypoints,
+    };
 }

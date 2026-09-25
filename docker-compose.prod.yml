@@ -64,6 +64,7 @@ services:
       - SPRING_R2DBC_URL=r2dbc:postgresql://postgres:5432/milkrun
       - SPRING_R2DBC_USERNAME=${POSTGRES_USER:-milkrun}
       - SPRING_R2DBC_PASSWORD=${POSTGRES_PASSWORD:-milkrun_secret}
+      - SPRING_FLYWAY_URL=jdbc:postgresql://postgres:5432/milkrun
       - MILKRUN_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_PROFILES_ACTIVE=prod
     restart: on-failure

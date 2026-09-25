@@ -8,7 +8,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import jakarta.annotation.PostConstruct;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 
 /**
  * Processes late GPS events from the reorder buffer's DLQ stream.
@@ -33,7 +34,7 @@ public class DlqConsumer {
         this.objectMapper = objectMapper;
     }
 
-    @PostConstruct
+    @EventListener(ApplicationReadyEvent.class)
     public void startDlqProcessing() {
         log.info("Starting DLQ consumer for late events...");
 

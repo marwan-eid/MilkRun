@@ -18,7 +18,8 @@ import reactor.kafka.receiver.KafkaReceiver;
 
 import org.springframework.beans.factory.annotation.Qualifier;
 
-import jakarta.annotation.PostConstruct;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import java.time.Duration;
 import java.util.List;
 
@@ -83,7 +84,7 @@ public class GpsEventPipeline {
                 .register(meterRegistry);
     }
 
-    @PostConstruct
+    @EventListener(ApplicationReadyEvent.class)
     public void startPipeline() {
         log.info("Starting GPS event processing pipeline...");
 

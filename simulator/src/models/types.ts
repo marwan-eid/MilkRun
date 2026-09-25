@@ -11,6 +11,7 @@ export interface GpsEvent {
         latitude: number;
         longitude: number;
     };
+    /** Speed in simulated km/h (see RoutePlan.time_scale). */
     speed_kmh: number;
     heading_degrees: number;
     battery_pct: number;
@@ -38,6 +39,7 @@ export interface DeliveryEvent {
         longitude: number;
     };
     parcels_delivered: number;
+    /** Time spent at the stop, in simulated seconds. */
     delivery_duration_seconds: number;
     sla_deadline: string;           // ISO 8601
     total_stops: number;
@@ -56,8 +58,13 @@ export interface RouteStop {
         latitude: number;
         longitude: number;
     };
+    /** Latest acceptable arrival (the customer's delivery slot ends here). */
     sla_deadline: string;           // ISO 8601
+    /** When the planner expected the van to arrive. */
+    planned_arrival: string;        // ISO 8601
     parcels: number;
+    /** Index of the route polyline vertex where the van stops for this delivery. */
+    waypoint_index: number;
 }
 
 /**
@@ -74,6 +81,25 @@ export interface Waypoint {
 export interface VanRoute {
     route_id: string;
     van_id: string;
+    created_at: string;             // ISO 8601
     stops: RouteStop[];
-    waypoints: Waypoint[];          // Dense waypoints between all stops
+    waypoints: Waypoint[];          // Street polyline: hub -> stops -> hub
+}
+
+/**
+ * Published to the compacted route-plans topic (key: van_id) whenever a route
+ * starts or changes, so the backend can compute ETAs along the planned path.
+ */
+export interface RoutePlanMessage {
+    route_id: string;
+    van_id: string;
+    /** Increases every time this route changes (e.g. an ad-hoc stop is inserted). */
+    version: number;
+    created_at: string;
+    /** Simulated seconds per wall-clock second. Speeds are in simulated km/h. */
+    time_scale: number;
+    base_speed_kmh: number;
+    stops: RouteStop[];
+    /** Route polyline as [latitude, longitude] pairs. */
+    waypoints: [number, number][];
 }

@@ -30,6 +30,12 @@
         "allDeclaredFields": true
     },
     {
+        "name": "com.milkrun.model.VanState$EtaMethod",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true,
+        "allDeclaredFields": true
+    },
+    {
         "name": "com.milkrun.model.Location",
         "allDeclaredConstructors": true,
         "allDeclaredMethods": true,
@@ -43,6 +49,30 @@
     },
     {
         "name": "com.milkrun.model.DeliveryEventType",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true,
+        "allDeclaredFields": true
+    },
+    {
+        "name": "com.milkrun.model.RoutePlan",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true,
+        "allDeclaredFields": true
+    },
+    {
+        "name": "com.milkrun.model.RoutePlan$Stop",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true,
+        "allDeclaredFields": true
+    },
+    {
+        "name": "com.milkrun.model.DispatchEvent",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true,
+        "allDeclaredFields": true
+    },
+    {
+        "name": "com.milkrun.model.DispatchRequest",
         "allDeclaredConstructors": true,
         "allDeclaredMethods": true,
         "allDeclaredFields": true

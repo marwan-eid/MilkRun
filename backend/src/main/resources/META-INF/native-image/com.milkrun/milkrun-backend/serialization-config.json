@@ -18,5 +18,15 @@
         "name": "com.milkrun.model.Location",
         "allDeclaredConstructors": true,
         "allDeclaredMethods": true
+    },
+    {
+        "name": "com.milkrun.model.RoutePlan",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
+    },
+    {
+        "name": "com.milkrun.model.RoutePlan$Stop",
+        "allDeclaredConstructors": true,
+        "allDeclaredMethods": true
     }
 ]

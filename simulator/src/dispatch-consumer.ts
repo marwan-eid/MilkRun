@@ -1,88 +1,69 @@
 import { Kafka, Consumer } from 'kafkajs';
 import { VanSimulator } from './van-simulator.js';
-import { haversineDistance } from './route-generator.js';
+import { haversineDistance } from './geo.js';
+import { TOPICS } from './kafka-producer.js';
 
+/**
+ * Receives ad-hoc orders from the dashboard (via the backend and Kafka) and
+ * inserts each one into the route of the closest van that still has stops to
+ * make, just before that van's next stop.
+ */
 export class DispatchConsumer {
     private kafka: Kafka;
     private consumer: Consumer;
-    private simulators: VanSimulator[];
 
-    constructor(brokers: string[], simulators: VanSimulator[]) {
-        this.kafka = new Kafka({
-            clientId: 'simulator-dispatch-consumer',
-            brokers
-        });
+    constructor(brokers: string[], private readonly simulators: VanSimulator[], private readonly timeScale: number) {
+        this.kafka = new Kafka({ clientId: 'simulator-dispatch-consumer', brokers });
         this.consumer = this.kafka.consumer({ groupId: 'simulator-dispatch-group' });
 
-        // Trap KafkaJS consumer death and intentionally panic the process
-        // This leverages Docker's restart policy to automatically self-heal the container 
-        // instead of silently losing the ability to intercept ad-hoc map clicks forever.
-        this.consumer.on(this.consumer.events.CRASH, e => {
-            console.error('💥 [DISPATCH DAEMON] Fatal Kafka Consumer crash detected. Forcing container restart...', e);
+        // If the consumer dies, exit so Docker's restart policy brings the
+        // simulator back instead of silently ignoring dispatches.
+        this.consumer.on(this.consumer.events.CRASH, (e) => {
+            console.error('💥 Dispatch consumer crashed, exiting so the container restarts', e);
             process.exit(1);
         });
-
-        this.simulators = simulators;
     }
 
-    public async connect(): Promise<void> {
-        // The simulator can start before anything else has created the topic
-        const admin = this.kafka.admin();
-        await admin.connect();
-        const topics = await admin.listTopics();
-        if (!topics.includes('dispatch-events')) {
-            // Attempt an explicit raw partition allocation
-            try {
-                await admin.createTopics({ topics: [{ topic: 'dispatch-events' }] });
-                console.log('🏗️ [DISPATCH DAEMON] Natively partitioned dispatch-events topic.');
-            } catch (ignored) { }
-        }
-        await admin.disconnect();
-
+    async connect(): Promise<void> {
         await this.consumer.connect();
-        await this.consumer.subscribe({ topic: 'dispatch-events', fromBeginning: true });
-
-        console.log('📡 [DISPATCH DAEMON] Subscribed and listening for ad-hoc UI map injections...');
+        // Only new orders: replaying old dispatches after a restart would send
+        // vans to stale locations.
+        await this.consumer.subscribe({ topic: TOPICS.dispatch, fromBeginning: false });
+        console.log('📡 Listening for ad-hoc dispatches');
 
         await this.consumer.run({
             eachMessage: async ({ message }) => {
                 try {
                     if (!message.value) return;
-                    console.log('🚨 [RAW KAFKA DISPATCH TRACE] Payload intercepted directly from Kafka broker:', message.value.toString());
-                    const payload = JSON.parse(message.value.toString());
-                    const { latitude, longitude } = payload;
-
-                    let closestVan: VanSimulator | null = null;
-                    let minDistance = Infinity;
-
-                    // Pick the closest van that is still out on its route
-                    for (const sim of this.simulators) {
-                        if (sim.currentStatus === 'IDLE' || sim.currentStatus === 'RETURNED' || sim.currentStatus === 'RETURNING') {
-                            continue;
-                        }
-                        const loc = sim.getCurrentLocation();
-                        if (!loc) continue;
-
-                        const dist = haversineDistance(loc, { latitude, longitude });
-                        if (dist < minDistance) {
-                            closestVan = sim;
-                            minDistance = dist;
-                        }
-                    }
-
-                    if (closestVan) {
-                        await closestVan.injectAdHocStop(latitude, longitude);
-                    } else {
-                        console.log('⚠️ [DYNAMIC DISPATCH ERROR] All drivers have retired to the regional hubs. Payload orphaned.');
-                    }
+                    const order = JSON.parse(message.value.toString());
+                    await this.assign(order.eventId ?? String(Date.now()), order.latitude, order.longitude);
                 } catch (e) {
-                    console.error('Failed processing dynamic dispatch payload', e);
+                    console.error('Failed to process dispatch', e);
                 }
-            }
+            },
         });
     }
 
-    public async disconnect(): Promise<void> {
+    private async assign(orderId: string, latitude: number, longitude: number): Promise<void> {
+        const target = { latitude, longitude };
+        const candidates = this.simulators
+            .filter((s) => s.currentStatus === 'EN_ROUTE' || s.currentStatus === 'DELIVERING')
+            .sort((a, b) => haversineDistance(a.getCurrentLocation(), target) - haversineDistance(b.getCurrentLocation(), target));
+
+        for (const van of candidates) {
+            const inserted = await van.insertStop({
+                beforeIndex: van.nextUnvisitedStop(),
+                location: target,
+                // A 15-minute slot, in simulated time
+                slaDeadline: new Date(Date.now() + (15 * 60 * 1000) / this.timeScale),
+                customerId: `dispatch-${orderId.slice(0, 8)}`,
+            });
+            if (inserted !== null) return;
+        }
+        console.log(`⚠️ No van could take dispatch ${orderId}`);
+    }
+
+    async disconnect(): Promise<void> {
         await this.consumer.disconnect();
     }
 }

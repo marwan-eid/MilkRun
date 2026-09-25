@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import type { VanState } from '../types/van';
+import { formatEta, formatSlack } from '../lib/format';
 
 interface SlaPanelProps {
     vans: Map<string, VanState>;
@@ -7,13 +8,6 @@ interface SlaPanelProps {
     onSelectVan: (vanId: string) => void;
     isOpen?: boolean;
     onClose?: () => void;
-}
-
-function formatEta(seconds: number): string {
-    if (seconds <= 0) return 'Now';
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return m > 0 ? `${m}m ${s}s` : `${s}s`;
 }
 
 function timeSince(iso: string): string {
@@ -144,6 +138,10 @@ const VanCard = memo(function VanCard({ van, isSelected, onClick }: VanCardProps
                 <div className="van-metric">
                     <span className="label">ETA</span>
                     <span className="value">{formatEta(van.eta_next_stop_seconds)}</span>
+                </div>
+                <div className="van-metric">
+                    <span className="label">Slack</span>
+                    <span className="value">{formatSlack(van.sla_slack_seconds)}</span>
                 </div>
                 <div className="van-metric">
                     <span className="label">Stop</span>

@@ -13,6 +13,16 @@ spring:
     username: ${SPRING_R2DBC_USERNAME:milkrun}
     password: ${SPRING_R2DBC_PASSWORD:milkrun_secret}
 
+  # ═══ Flyway (JDBC, runs before the pipelines start) ═══
+  # Baseline 0 + idempotent V1: databases created by the old init.sql already
+  # hold the V1 objects, so V1 is a no-op there and later versions still apply.
+  flyway:
+    url: ${SPRING_FLYWAY_URL:jdbc:postgresql://localhost:5432/milkrun}
+    user: ${spring.r2dbc.username}
+    password: ${spring.r2dbc.password}
+    baseline-on-migrate: true
+    baseline-version: 0
+
 # ═══ Kafka ═══
 
 milkrun:
@@ -21,6 +31,8 @@ milkrun:
     gps-topic: gps-events
     delivery-topic: delivery-events
     dlq-topic: gps-events-dlq
+    route-plans-topic: route-plans
+    dispatch-topic: dispatch-events
     consumer-group: milkrun-engine
   pipeline:
     dedup-expected-insertions: 100000
@@ -28,8 +40,14 @@ milkrun:
     reorder-buffer-grace-ms: 3000
     reorder-buffer-max-size: 50
   eta:
-    sla-warning-buffer-seconds: 120
-    sla-critical-buffer-seconds: 30
+    # Slack = deadline - predicted arrival (wall-clock seconds).
+    # Below the critical buffer the stop is projected to miss its slot.
+    sla-warning-buffer-seconds: 60
+    sla-critical-buffer-seconds: 0
+    # Straight-line fallback: road distance is about this much longer.
+    detour-factor: 1.3
+    # Farther than this from the planned route, the van is treated as off-route.
+    off-route-meters: 200
   backpressure:
     sample-interval-ms: 500
   # Origins allowed to call the API cross-origin (the dashboard itself is same-origin)

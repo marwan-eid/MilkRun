@@ -65,6 +65,16 @@
             </exclusions>
         </dependency>
 
+        <!-- ═══ Flyway (schema migrations, runs over JDBC at startup) ═══ -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
         <!-- ═══ JDBC PostgreSQL (for Calcite adapter) ═══ -->
         <dependency>
             <groupId>org.postgresql</groupId>

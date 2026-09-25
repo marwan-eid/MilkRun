@@ -2,11 +2,16 @@ package com.milkrun.engine;
 
 import com.milkrun.model.GpsEvent;
 import com.milkrun.model.Location;
+import com.milkrun.model.RoutePlan;
 import com.milkrun.model.VanState;
 import com.milkrun.model.VanState.DataConfidence;
+import com.milkrun.model.VanState.EtaMethod;
 import com.milkrun.model.VanState.SlaRisk;
+import com.milkrun.model.VanStatus;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,119 +20,138 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * ETA calculation engine with Haversine distance, SLA risk prediction,
- * and circuit-breaker-protected fallback.
+ * Predicts when each van reaches its next stop and whether it will make the
+ * stop's delivery slot.
  *
- * Pipeline: GPS event → compute distance to next stop → speed-based ETA
- * → apply geofence speed factor → compare against SLA deadline
- * → emit VanState with confidence + SLA risk
+ * The primary estimate walks the planned route from the van's matched position
+ * to the stop, slowing each segment by its delay-zone factor, at the van's
+ * free-flow speed. That speed is learned from how fast the van actually
+ * progresses along the route (normalised by the zone it was in), starting from
+ * its reported speed. SLA risk compares the predicted arrival with the stop's
+ * deadline.
+ *
+ * The estimator runs behind a circuit breaker. If it keeps throwing (for
+ * example on a malformed plan), or the van is off its planned route, the
+ * straight-line distance times a detour factor is used instead.
  */
 @Service
 public class EtaEngine {
 
     private static final Logger log = LoggerFactory.getLogger(EtaEngine.class);
-    private static final double EARTH_RADIUS_KM = 6371.0;
+    private static final double EMA_ALPHA = 0.3;
 
     private final CircuitBreaker circuitBreaker;
-    private final GeofenceDetector geofenceDetector;
-    private final long slaWarningBufferSeconds;
-    private final long slaCriticalBufferSeconds;
+    private final GeofenceDetector geofence;
+    private final RoutePlanStore planStore;
+    private final long warningBufferSeconds;
+    private final long criticalBufferSeconds;
+    private final double detourFactor;
+    private final double offRouteMeters;
+
     private final ConcurrentHashMap<String, VanState> vanStates = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Track> tracks = new ConcurrentHashMap<>();
 
-    // Per-van distance tracking for accurate ETA
-    private final ConcurrentHashMap<String, Double> cumulativeDistances = new ConcurrentHashMap<>();
-
-    // Metrics
     private final Counter etaCalculations;
-    private final Counter slaWarnings;
-    private final Counter slaCriticals;
     private final Counter circuitBreakerFallbacks;
+    private final Counter offRoute;
+    private final DistributionSummary etaError;
 
     public EtaEngine(
             CircuitBreaker circuitBreaker,
-            GeofenceDetector geofenceDetector,
+            GeofenceDetector geofence,
+            RoutePlanStore planStore,
             MeterRegistry meterRegistry,
-            @Value("${milkrun.eta.sla-warning-buffer-seconds:120}") long slaWarningBufferSeconds,
-            @Value("${milkrun.eta.sla-critical-buffer-seconds:30}") long slaCriticalBufferSeconds) {
+            @Value("${milkrun.eta.sla-warning-buffer-seconds:60}") long warningBufferSeconds,
+            @Value("${milkrun.eta.sla-critical-buffer-seconds:0}") long criticalBufferSeconds,
+            @Value("${milkrun.eta.detour-factor:1.3}") double detourFactor,
+            @Value("${milkrun.eta.off-route-meters:200}") double offRouteMeters) {
         this.circuitBreaker = circuitBreaker;
-        this.geofenceDetector = geofenceDetector;
-        this.slaWarningBufferSeconds = slaWarningBufferSeconds;
-        this.slaCriticalBufferSeconds = slaCriticalBufferSeconds;
+        this.geofence = geofence;
+        this.planStore = planStore;
+        this.warningBufferSeconds = warningBufferSeconds;
+        this.criticalBufferSeconds = criticalBufferSeconds;
+        this.detourFactor = detourFactor;
+        this.offRouteMeters = offRouteMeters;
 
         this.etaCalculations = Counter.builder("milkrun.eta.calculations")
-                .description("Total ETA calculations performed")
-                .register(meterRegistry);
-        this.slaWarnings = Counter.builder("milkrun.sla.warnings")
-                .description("SLA warning events emitted")
-                .register(meterRegistry);
-        this.slaCriticals = Counter.builder("milkrun.sla.criticals")
-                .description("SLA critical events emitted")
-                .register(meterRegistry);
+                .description("ETA calculations performed").register(meterRegistry);
         this.circuitBreakerFallbacks = Counter.builder("milkrun.circuit_breaker.fallbacks")
-                .description("Circuit breaker fallback invocations")
+                .description("ETAs computed by the straight-line fallback because the route estimator failed or its breaker was open")
                 .register(meterRegistry);
+        this.offRoute = Counter.builder("milkrun.eta.off_route")
+                .description("ETAs computed by the straight-line fallback because the van was off its planned route")
+                .register(meterRegistry);
+        this.etaError = DistributionSummary.builder("milkrun.eta.error.seconds")
+                .description("Absolute error of the ETA predicted when the van set off for a stop, measured on arrival")
+                .baseUnit("seconds")
+                .publishPercentiles(0.5, 0.9)
+                .publishPercentileHistogram()
+                .register(meterRegistry);
+        Gauge.builder("milkrun.vans.tracked", vanStates, Map::size)
+                .description("Vans with a known state").register(meterRegistry);
+        for (SlaRisk risk : SlaRisk.values()) {
+            Gauge.builder("milkrun.vans.sla_risk", this, e -> e.countByRisk(risk))
+                    .description("Vans whose next stop currently has this SLA risk")
+                    .tag("level", risk.name())
+                    .register(meterRegistry);
+        }
     }
 
-    /**
-     * Process a GPS event and compute the new VanState.
-     * Protected by a circuit breaker — falls back to linear extrapolation.
-     */
+    /** Per-van state carried between GPS events. Guarded by its own monitor. */
+    private static final class Track {
+        String routeId;
+        VanStatus lastStatus;
+        int lastStopIndex = -1;
+        double lastDistance = Double.NaN;
+        Instant lastTimestamp;
+        /** Learned free-flow speed in wall-clock metres per second; NaN until measured. */
+        double freeFlowMps = Double.NaN;
+        /** Predicted arrival made when the van set off for each stop, by customer id. */
+        final Map<String, Instant> firstPrediction = new HashMap<>();
+        /** Actual arrival at each stop, by customer id. */
+        final Map<String, Instant> arrivals = new HashMap<>();
+
+        void resetIfNewRoute(String routeId) {
+            if (!routeId.equals(this.routeId)) {
+                this.routeId = routeId;
+                lastStatus = null;
+                lastStopIndex = -1;
+                lastDistance = Double.NaN;
+                lastTimestamp = null;
+                firstPrediction.clear();
+                arrivals.clear();
+                // freeFlowMps is kept: it describes the van, not the route
+            }
+        }
+    }
+
+    private record Estimate(long etaSeconds, EtaMethod method, Instant deadline, Instant arrival, SlaRisk risk) {
+        static final Estimate UNKNOWN = new Estimate(-1, EtaMethod.NONE, null, null, SlaRisk.UNKNOWN);
+        static final Estimate NO_NEXT_STOP = new Estimate(-1, EtaMethod.NONE, null, null, SlaRisk.NONE);
+
+        Long slackSeconds() {
+            return deadline == null || arrival == null ? null : Duration.between(arrival, deadline).toSeconds();
+        }
+    }
+
     public VanState processGpsEvent(GpsEvent event) {
         etaCalculations.increment();
+        GeofenceDetector.GeofenceResult zone = geofence.check(event.location());
 
-        try {
-            return CircuitBreaker.decorateSupplier(circuitBreaker, () -> computeVanState(event)).get();
-        } catch (Exception e) {
-            circuitBreakerFallbacks.increment();
-            log.warn("Circuit breaker fallback for van={}: {}", event.vanId(), e.getMessage());
-            return computeFallbackState(event);
+        Track track = tracks.computeIfAbsent(event.vanId(), k -> new Track());
+        Estimate estimate;
+        synchronized (track) {
+            track.resetIfNewRoute(event.routeId());
+            estimate = planStore.get(event.vanId(), event.routeId())
+                    .map(planned -> estimate(event, planned, track))
+                    .orElse(Estimate.UNKNOWN);
         }
-    }
-
-    /**
-     * Full ETA computation with geofence detection and actual distance tracking.
-     */
-    private VanState computeVanState(GpsEvent event) {
-        // Geofence check
-        GeofenceDetector.GeofenceResult geofence = geofenceDetector.check(event.location());
-
-        // Compute speed (floor at 5 km/h to avoid infinity ETA)
-        double speedKmh = Math.max(event.speedKmh(), 5.0);
-
-        // Apply geofence speed factor
-        if (geofence.inGeofence()) {
-            speedKmh *= geofence.speedFactor();
-        }
-
-        // Smooth the speed using an Exponential Moving Average (EMA) to prevent massive
-        // ETA jumps
-        // when the van randomly speeds up or hits a geofence.
-        Double prevSpeed = cumulativeDistances.put(event.vanId(), speedKmh); // Re-using this map for speed EMA
-        if (prevSpeed != null) {
-            speedKmh = (0.2 * speedKmh) + (0.8 * prevSpeed);
-            cumulativeDistances.put(event.vanId(), speedKmh);
-        }
-
-        // Estimate distance to next stop using the average route dist (15km) divided by
-        // total stops
-        int total = Math.max(event.totalStops(), 1);
-        double etaNextStopKm = 15.0 / total;
-
-        long etaNextStopSeconds = (long) ((etaNextStopKm / speedKmh) * 3600);
-
-        // SLA risk assessment
-        SlaRisk slaRisk = assessSlaRisk(etaNextStopSeconds);
-
-        if (slaRisk == SlaRisk.WARNING)
-            slaWarnings.increment();
-        if (slaRisk == SlaRisk.CRITICAL)
-            slaCriticals.increment();
-
-        // Determine data confidence
-        DataConfidence confidence = assessConfidence(event);
 
         VanState state = new VanState(
                 event.vanId(),
@@ -139,88 +163,178 @@ public class EtaEngine {
                 event.status(),
                 event.currentStopIndex(),
                 event.totalStops(),
-                etaNextStopSeconds,
-                slaRisk,
-                confidence,
-                geofence.inGeofence(),
-                geofence.zoneName(),
-                Instant.now());
-
+                estimate.etaSeconds(),
+                estimate.risk(),
+                assessConfidence(event),
+                zone.inGeofence(),
+                zone.zoneName(),
+                Instant.now(),
+                estimate.deadline(),
+                estimate.arrival(),
+                estimate.slackSeconds(),
+                estimate.method());
         vanStates.put(event.vanId(), state);
         return state;
     }
 
-    /**
-     * Fallback: linear extrapolation from last known speed.
-     * Used when the circuit breaker is open.
-     */
-    private VanState computeFallbackState(GpsEvent event) {
-        VanState lastKnown = vanStates.get(event.vanId());
-        long etaSeconds = lastKnown != null ? lastKnown.etaNextStopSeconds() : 300; // default 5 min
-
-        return new VanState(
-                event.vanId(),
-                event.routeId(),
-                event.location(),
-                event.speedKmh(),
-                event.headingDegrees(),
-                event.batteryPct(),
-                event.status(),
-                event.currentStopIndex(),
-                event.totalStops(),
-                etaSeconds,
-                SlaRisk.NONE,
-                DataConfidence.INTERPOLATED,
-                false,
-                null,
-                Instant.now());
-    }
-
-    /**
-     * Assess SLA risk based on ETA.
-     */
-    private SlaRisk assessSlaRisk(long etaSeconds) {
-        if (etaSeconds > slaCriticalBufferSeconds && etaSeconds <= slaWarningBufferSeconds) {
-            return SlaRisk.WARNING;
-        } else if (etaSeconds > slaWarningBufferSeconds) {
-            // ETA is very large, critical risk
-            return SlaRisk.CRITICAL;
+    private Estimate estimate(GpsEvent event, RoutePlanStore.PlannedRoute planned, Track track) {
+        List<RoutePlan.Stop> stops = planned.plan().stops();
+        int k = event.currentStopIndex();
+        if (k < 0 || k >= stops.size()) {
+            return Estimate.NO_NEXT_STOP;
         }
-        return SlaRisk.NONE;
+        RoutePlan.Stop stop = stops.get(k);
+
+        if (event.status() == VanStatus.DELIVERING) {
+            Instant arrival = track.arrivals.computeIfAbsent(stop.customerId(),
+                    c -> recordArrival(track, c, event.deviceTimestamp()));
+            track.lastStatus = VanStatus.DELIVERING;
+            track.lastStopIndex = k;
+            track.lastDistance = planned.geometry().distanceAt(stop.waypointIndex());
+            track.lastTimestamp = event.deviceTimestamp();
+            SlaRisk risk = arrival.isAfter(stop.slaDeadline()) ? SlaRisk.CRITICAL : SlaRisk.NONE;
+            return new Estimate(0, EtaMethod.ROUTE, stop.slaDeadline(), arrival, risk);
+        }
+        if (event.status() != VanStatus.EN_ROUTE) {
+            return Estimate.NO_NEXT_STOP;
+        }
+
+        Estimate estimate = null;
+        try {
+            estimate = circuitBreaker.executeSupplier(() -> routeEstimate(event, planned, track, k));
+        } catch (Exception e) {
+            circuitBreakerFallbacks.increment();
+            log.debug("Route estimator failed for van={}: {}", event.vanId(), e.toString());
+        }
+        if (estimate == null) {
+            estimate = straightLineEstimate(event, planned.plan(), stop, track);
+        }
+        track.firstPrediction.putIfAbsent(stop.customerId(), estimate.arrival());
+        return estimate;
     }
 
     /**
-     * Assess data confidence based on event freshness.
+     * Along-route estimate, or null when the van is too far from the planned
+     * leg for the route to be trusted.
      */
+    private Estimate routeEstimate(GpsEvent event, RoutePlanStore.PlannedRoute planned, Track track, int k) {
+        RoutePlan plan = planned.plan();
+        RouteGeometry geometry = planned.geometry();
+        RoutePlan.Stop stop = plan.stops().get(k);
+        int fromVertex = k == 0 ? 0 : plan.stops().get(k - 1).waypointIndex();
+
+        RouteGeometry.Match match = geometry.locate(
+                event.location().latitude(), event.location().longitude(), fromVertex, stop.waypointIndex());
+        if (match.offRouteMeters() > offRouteMeters) {
+            offRoute.increment();
+            return null;
+        }
+        learnSpeed(track, event, k, match.distanceAlong(), geometry);
+
+        double freeFlow = !Double.isNaN(track.freeFlowMps)
+                ? track.freeFlowMps
+                : priorFreeFlow(event, plan, geometry.factorAt(match.distanceAlong()));
+        double seconds = geometry.travelSeconds(match.distanceAlong(), stop.waypointIndex(), freeFlow);
+        return estimateFor(stop, event.deviceTimestamp(), seconds, EtaMethod.ROUTE);
+    }
+
+    private Estimate straightLineEstimate(GpsEvent event, RoutePlan plan, RoutePlan.Stop stop, Track track) {
+        Location p = event.location();
+        double meters = RouteGeometry.haversineMeters(p.latitude(), p.longitude(),
+                stop.location().latitude(), stop.location().longitude()) * detourFactor;
+        double factor = geofence.speedFactorAt(p.latitude(), p.longitude());
+        double speed = !Double.isNaN(track.freeFlowMps)
+                ? track.freeFlowMps * factor
+                : priorFreeFlow(event, plan, factor) * factor;
+        return estimateFor(stop, event.deviceTimestamp(), speed > 0 ? meters / speed : 0, EtaMethod.STRAIGHT_LINE);
+    }
+
+    private Estimate estimateFor(RoutePlan.Stop stop, Instant from, double seconds, EtaMethod method) {
+        long eta = Math.round(seconds);
+        Instant arrival = from.plusSeconds(eta);
+        long slack = Duration.between(arrival, stop.slaDeadline()).toSeconds();
+        SlaRisk risk = slack < criticalBufferSeconds ? SlaRisk.CRITICAL
+                : slack < warningBufferSeconds ? SlaRisk.WARNING
+                : SlaRisk.NONE;
+        return new Estimate(eta, method, stop.slaDeadline(), arrival, risk);
+    }
+
+    /**
+     * Updates the van's free-flow speed from its progress along the route since
+     * the previous event of the same leg.
+     */
+    private void learnSpeed(Track track, GpsEvent event, int stopIndex, double distance, RouteGeometry geometry) {
+        if (track.lastStatus == VanStatus.EN_ROUTE && track.lastStopIndex == stopIndex
+                && !Double.isNaN(track.lastDistance) && track.lastTimestamp != null) {
+            double dt = Duration.between(track.lastTimestamp, event.deviceTimestamp()).toMillis() / 1000.0;
+            double ds = distance - track.lastDistance;
+            if (dt >= 0.2 && dt <= 30 && ds >= 0) {
+                double factor = geometry.factorAt((distance + track.lastDistance) / 2);
+                double sample = (ds / dt) / factor;
+                track.freeFlowMps = Double.isNaN(track.freeFlowMps)
+                        ? sample
+                        : EMA_ALPHA * sample + (1 - EMA_ALPHA) * track.freeFlowMps;
+            }
+        }
+        track.lastStatus = VanStatus.EN_ROUTE;
+        track.lastStopIndex = stopIndex;
+        track.lastDistance = distance;
+        track.lastTimestamp = event.deviceTimestamp();
+    }
+
+    /**
+     * Free-flow speed in wall-clock m/s before anything has been measured: the
+     * reported (simulated) speed scaled by the time scale and un-slowed by the
+     * zone, or the plan's base speed.
+     */
+    private static double priorFreeFlow(GpsEvent event, RoutePlan plan, double zoneFactor) {
+        double simKmh = event.speedKmh() > 0 ? event.speedKmh() / zoneFactor : plan.baseSpeedKmh();
+        return simKmh / 3.6 * plan.timeScale();
+    }
+
+    private Instant recordArrival(Track track, String customerId, Instant arrival) {
+        Instant predicted = track.firstPrediction.get(customerId);
+        if (predicted != null) {
+            etaError.record(Math.abs(Duration.between(predicted, arrival).toMillis()) / 1000.0);
+        }
+        return arrival;
+    }
+
+    /**
+     * The arrival predicted when the van set off for this stop, if this
+     * instance saw it.
+     */
+    public Instant initialPrediction(String vanId, String routeId, String customerId) {
+        Track track = tracks.get(vanId);
+        if (track == null) {
+            return null;
+        }
+        synchronized (track) {
+            return routeId.equals(track.routeId) ? track.firstPrediction.get(customerId) : null;
+        }
+    }
+
     private DataConfidence assessConfidence(GpsEvent event) {
         if (event.ingestionTimestamp() == null) {
             return DataConfidence.STALE;
         }
         long lagMs = Duration.between(event.deviceTimestamp(), event.ingestionTimestamp()).toMillis();
-        if (lagMs < 2000)
-            return DataConfidence.REAL_TIME;
-        if (lagMs < 10000)
-            return DataConfidence.INTERPOLATED;
+        if (lagMs < 2000) return DataConfidence.REAL_TIME;
+        if (lagMs < 10000) return DataConfidence.INTERPOLATED;
         return DataConfidence.STALE;
     }
 
-    /**
-     * Get the current state of all vans.
-     */
+    private long countByRisk(SlaRisk risk) {
+        return vanStates.values().stream().filter(v -> v.slaRisk() == risk).count();
+    }
+
+    /** Latest state of every van. */
     public ConcurrentHashMap<String, VanState> getAllVanStates() {
         return vanStates;
     }
 
-    /**
-     * Haversine distance between two locations in km.
-     */
+    /** Haversine distance between two locations in km. */
     public static double haversineDistance(Location a, Location b) {
-        double dLat = Math.toRadians(b.latitude() - a.latitude());
-        double dLon = Math.toRadians(b.longitude() - a.longitude());
-        double lat1 = Math.toRadians(a.latitude());
-        double lat2 = Math.toRadians(b.latitude());
-        double h = Math.pow(Math.sin(dLat / 2), 2) +
-                Math.cos(lat1) * Math.cos(lat2) * Math.pow(Math.sin(dLon / 2), 2);
-        return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h));
+        return RouteGeometry.haversineMeters(a.latitude(), a.longitude(), b.latitude(), b.longitude()) / 1000;
     }
 }
