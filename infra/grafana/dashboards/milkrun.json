@@ -451,7 +451,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Late and malformed events",
+      "title": "Reorder buffer and late events",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -460,6 +460,123 @@
       "gridPos": {
         "x": 0,
         "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(milkrun_reorder_buffer_size)",
+          "legendFormat": "events waiting in buffer",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(milkrun_events_late_total[5m])) * 60",
+          "legendFormat": "late events / min",
+          "refId": "B"
+        }
+      ],
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "Persistence",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(milkrun_gps_archived_total[5m]))",
+          "legendFormat": "GPS points archived/s",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(milkrun_gps_archive_dropped_total[5m]))",
+          "legendFormat": "archive points dropped/s",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(milkrun_delivery_events_dead_lettered_total[5m])) * 60",
+          "legendFormat": "delivery records dead-lettered / min",
+          "refId": "C"
+        }
+      ],
+      "id": 10
+    },
+    {
+      "type": "timeseries",
+      "title": "Late and malformed events",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -501,7 +618,7 @@
           "refId": "B"
         }
       ],
-      "id": 9
+      "id": 11
     },
     {
       "type": "timeseries",
@@ -513,7 +630,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 28,
         "w": 12,
         "h": 8
       },
@@ -555,7 +672,7 @@
           "refId": "B"
         }
       ],
-      "id": 10
+      "id": 12
     },
     {
       "type": "timeseries",
@@ -567,7 +684,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 36,
         "w": 12,
         "h": 8
       },
@@ -609,7 +726,7 @@
           "refId": "B"
         }
       ],
-      "id": 11
+      "id": 13
     },
     {
       "type": "timeseries",
@@ -621,7 +738,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 28,
+        "y": 36,
         "w": 12,
         "h": 8
       },
@@ -654,7 +771,7 @@
           "refId": "A"
         }
       ],
-      "id": 12
+      "id": 14
     }
   ],
   "templating": {

@@ -1,128 +1,110 @@
 package com.milkrun.pipeline;
 
-import com.milkrun.model.GpsEvent;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.stereotype.Component;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Sinks;
-
 import java.time.Duration;
 import java.time.Instant;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.PriorityQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.function.ToLongFunction;
 
 /**
  * Per-van out-of-order reconciliation buffer.
  *
- * GPS events from moving vans arrive out of order due to cellular network
- * jitter and Kafka partition rebalancing. This buffer holds events in a
- * time-windowed priority queue (keyed by device_timestamp) for a configurable
- * grace period before flushing them in correct chronological order.
+ * GPS events arrive out of order (cellular jitter, retries, partition
+ * rebalances). Each van's events wait in a priority queue ordered by device
+ * timestamp until they are older than the grace window, and are then released
+ * in order by {@link #drainReady}. An event older than one already released
+ * for its van cannot be put in order any more: {@link #offer} rejects it as
+ * late so the caller can dead-letter it.
  *
- * Events arriving after the grace window closes are emitted on a separate
- * "late events" flux for DLQ processing.
+ * A van's queue is released immediately when it holds a terminal event (the
+ * van has finished its route, nothing more is coming) or grows past the size
+ * limit.
+ *
+ * @param <T> buffered item; the accessors passed to the constructor read its
+ *            van, timestamp, sequence number and whether it is terminal
  */
-@Component
-public class ReorderBuffer {
+public class ReorderBuffer<T> {
 
-    private static final Logger log = LoggerFactory.getLogger(ReorderBuffer.class);
-
-    private final long graceMs;
+    private final Duration grace;
     private final int maxBufferSize;
+    private final Function<T, String> vanId;
+    private final Function<T, Instant> timestamp;
+    private final Comparator<T> order;
+    private final Predicate<T> terminal;
     private final ConcurrentHashMap<String, VanBuffer> vanBuffers = new ConcurrentHashMap<>();
-    private final Sinks.Many<GpsEvent> lateEventsSink = Sinks.many().multicast().onBackpressureBuffer();
 
-    public ReorderBuffer(
-            @Value("${milkrun.pipeline.reorder-buffer-grace-ms:3000}") long graceMs,
-            @Value("${milkrun.pipeline.reorder-buffer-max-size:50}") int maxBufferSize) {
-        this.graceMs = graceMs;
+    public ReorderBuffer(Duration grace, int maxBufferSize,
+            Function<T, String> vanId, Function<T, Instant> timestamp,
+            ToLongFunction<T> sequenceNumber, Predicate<T> terminal) {
+        this.grace = grace;
         this.maxBufferSize = maxBufferSize;
-        log.info("ReorderBuffer initialized: graceMs={}, maxBufferSize={}", graceMs, maxBufferSize);
+        this.vanId = vanId;
+        this.timestamp = timestamp;
+        this.order = Comparator.comparing(timestamp).thenComparingLong(sequenceNumber);
+        this.terminal = terminal;
     }
 
     /**
-     * Add an event to the buffer and return any events ready to be flushed
-     * (i.e., their grace window has expired).
+     * Adds an item to its van's queue.
+     *
+     * @return false if the item is late (older than an item already released
+     *         for the same van); it is not buffered
      */
-    public List<GpsEvent> addAndFlush(GpsEvent event) {
-        VanBuffer buffer = vanBuffers.computeIfAbsent(event.vanId(), VanBuffer::new);
-        return buffer.addAndFlush(event);
+    public boolean offer(T item) {
+        return vanBuffers.computeIfAbsent(vanId.apply(item), k -> new VanBuffer()).offer(item);
     }
 
     /**
-     * Flux of late events that arrived after their grace window.
-     * These should be sent to the DLQ.
+     * Removes and returns, van by van in timestamp order, every item that is
+     * older than the grace window, plus all items of vans that hold a terminal
+     * item or exceed the size limit.
      */
-    public Flux<GpsEvent> lateEvents() {
-        return lateEventsSink.asFlux();
+    public List<T> drainReady(Instant now) {
+        Instant cutoff = now.minus(grace);
+        List<T> ready = new ArrayList<>();
+        for (VanBuffer buffer : vanBuffers.values()) {
+            buffer.drain(cutoff, ready);
+        }
+        return ready;
     }
 
-    /**
-     * Per-van buffer backed by a PriorityQueue ordered by device_timestamp.
-     */
-    private class VanBuffer {
-        private final String vanId;
-        private final PriorityQueue<GpsEvent> queue;
-        private Instant lastFlushedTimestamp = Instant.EPOCH;
+    /** Items currently held, across all vans. */
+    public int size() {
+        return vanBuffers.values().stream().mapToInt(VanBuffer::size).sum();
+    }
 
-        VanBuffer(String vanId) {
-            this.vanId = vanId;
-            this.queue = new PriorityQueue<>(
-                    Comparator.comparing(GpsEvent::deviceTimestamp)
-                            .thenComparingLong(GpsEvent::sequenceNumber));
+    private final class VanBuffer {
+        private final PriorityQueue<T> queue = new PriorityQueue<>(order);
+        private Instant lastReleased = Instant.EPOCH;
+        private boolean flushAll;
+
+        synchronized boolean offer(T item) {
+            if (timestamp.apply(item).isBefore(lastReleased)) {
+                return false;
+            }
+            queue.add(item);
+            if (terminal.test(item) || queue.size() > maxBufferSize) {
+                flushAll = true;
+            }
+            return true;
         }
 
-        synchronized List<GpsEvent> addAndFlush(GpsEvent event) {
-            // Check if this event is "late" — its timestamp is before our last flushed
-            // event
-            if (event.deviceTimestamp().isBefore(lastFlushedTimestamp)) {
-                log.debug("Late event detected: van={}, seq={}, deviceTs={}, lastFlushed={}",
-                        vanId, event.sequenceNumber(), event.deviceTimestamp(), lastFlushedTimestamp);
-                lateEventsSink.tryEmitNext(event);
-                return Collections.emptyList();
+        synchronized void drain(Instant cutoff, List<T> out) {
+            while (!queue.isEmpty() && (flushAll || timestamp.apply(queue.peek()).isBefore(cutoff))) {
+                T item = queue.poll();
+                lastReleased = timestamp.apply(item);
+                out.add(item);
             }
-
-            queue.add(event);
-
-            // Bypass grace window for terminal states — it guarantees no more events are
-            // coming to push the buffer out
-            if (com.milkrun.model.VanStatus.RETURNED.equals(event.status())) {
-                log.info("Terminal RETURNED state received for van={}, force-flushing final buffer", vanId);
-                return flushAll();
-            }
-
-            // Force flush if buffer is too large (backpressure safety)
-            if (queue.size() > maxBufferSize) {
-                log.warn("Buffer overflow for van={}, force-flushing {} events", vanId, queue.size());
-                return flushAll();
-            }
-
-            return flushReady();
+            flushAll = false;
         }
 
-        private List<GpsEvent> flushReady() {
-            List<GpsEvent> ready = new ArrayList<>();
-            Instant cutoff = Instant.now().minusMillis(graceMs);
-
-            while (!queue.isEmpty() && queue.peek().deviceTimestamp().isBefore(cutoff)) {
-                GpsEvent event = queue.poll();
-                lastFlushedTimestamp = event.deviceTimestamp();
-                ready.add(event);
-            }
-
-            return ready;
-        }
-
-        private List<GpsEvent> flushAll() {
-            List<GpsEvent> all = new ArrayList<>();
-            while (!queue.isEmpty()) {
-                GpsEvent event = queue.poll();
-                lastFlushedTimestamp = event.deviceTimestamp();
-                all.add(event);
-            }
-            return all;
+        synchronized int size() {
+            return queue.size();
         }
     }
 }

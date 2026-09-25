@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.milkrun.engine.EtaEngine;
 import com.milkrun.engine.GeofenceDetector;
 import com.milkrun.model.DeliveryEvent;
+import com.milkrun.persistence.DeadLetterRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -13,24 +15,35 @@ import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Flux;
+import reactor.core.Disposable;
 import reactor.core.publisher.Mono;
 import reactor.kafka.receiver.KafkaReceiver;
+import reactor.kafka.receiver.ReceiverRecord;
+import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Persists delivery outcomes so the analytics layer can query them.
  *
- * Kafka (delivery-events) -> per event type:
- *   ARRIVAL            -> route row (if the plan has not created it yet), delivery log,
- *                         SLA breach if the van arrived after the slot ended
- *   DELIVERY_COMPLETED -> delivery log, route counters
- *   DELIVERY_FAILED    -> delivery log, route counters
- *   DEPARTURE          -> route marked COMPLETED after its last stop
+ * Records of one partition are processed strictly one after another (a van's
+ * events share a partition, so its stops are handled in order); partitions
+ * run in parallel. A record's offset is acknowledged only after its writes
+ * succeeded, and every write is idempotent (keyed by the event id, or a pure
+ * function of the delivery log), so replaying records after a crash is safe.
+ *
+ * A record that keeps failing is retried with backoff and then moved to the
+ * dead-letter log so it cannot block its partition; if even that write fails
+ * (database down), the consumer restarts from the last committed offset.
+ *
+ * <pre>
+ * ARRIVAL            -> route row if missing, delivery log row, SLA breach if late
+ * DELIVERY_COMPLETED -> delivery log row, route counters
+ * DELIVERY_FAILED    -> delivery log row, route counters
+ * DEPARTURE          -> departure time; after the last stop, the route is completed
+ * </pre>
  */
 @Service
 public class DeliveryEventPipeline {
@@ -44,13 +57,15 @@ public class DeliveryEventPipeline {
     private final DatabaseClient db;
     private final GeofenceDetector geofenceDetector;
     private final EtaEngine etaEngine;
+    private final DeadLetterRepository deadLetters;
+    private final Retry writeRetry;
 
     private final Counter deliveryEventsReceived;
     private final Counter deliveryEventsProcessed;
+    private final Counter deliveryEventsDeadLettered;
     private final Counter slaBreachesDetected;
 
-    // In-memory route tracking: routeId -> RouteTracker
-    private final ConcurrentHashMap<String, RouteTracker> routeTrackers = new ConcurrentHashMap<>();
+    private Disposable subscription;
 
     public DeliveryEventPipeline(
             @Qualifier("deliveryKafkaReceiver") KafkaReceiver<String, String> kafkaReceiver,
@@ -58,126 +73,128 @@ public class DeliveryEventPipeline {
             DatabaseClient databaseClient,
             MeterRegistry meterRegistry,
             GeofenceDetector geofenceDetector,
-            EtaEngine etaEngine) {
+            EtaEngine etaEngine,
+            DeadLetterRepository deadLetters) {
         this.kafkaReceiver = kafkaReceiver;
         this.objectMapper = objectMapper;
         this.db = databaseClient;
         this.geofenceDetector = geofenceDetector;
         this.etaEngine = etaEngine;
+        this.deadLetters = deadLetters;
+        this.writeRetry = Retry.backoff(3, Duration.ofMillis(200)).maxBackoff(Duration.ofSeconds(2));
 
         this.deliveryEventsReceived = Counter.builder("milkrun.delivery.events.received")
-                .description("Delivery events received from Kafka")
-                .register(meterRegistry);
+                .description("Delivery events received from Kafka").register(meterRegistry);
         this.deliveryEventsProcessed = Counter.builder("milkrun.delivery.events.processed")
-                .description("Delivery events persisted to DB")
-                .register(meterRegistry);
+                .description("Delivery events persisted to the database").register(meterRegistry);
+        this.deliveryEventsDeadLettered = Counter.builder("milkrun.delivery.events.dead_lettered")
+                .description("Delivery records moved to the dead-letter log").register(meterRegistry);
         this.slaBreachesDetected = Counter.builder("milkrun.delivery.sla_breaches")
-                .description("Stops where the van arrived after the delivery slot ended")
-                .register(meterRegistry);
+                .description("Stops where the van arrived after the delivery slot ended").register(meterRegistry);
     }
 
     /** Starts once the application is ready, i.e. after Flyway has migrated the schema. */
     @EventListener(ApplicationReadyEvent.class)
     public void startPipeline() {
-        kafkaReceiver.receive()
-                .flatMap(record -> {
-                    deliveryEventsReceived.increment();
-                    try {
-                        DeliveryEvent event = objectMapper.readValue(record.value(), DeliveryEvent.class);
-                        record.receiverOffset().acknowledge();
-                        return processDeliveryEvent(event).thenMany(Flux.empty());
-                    } catch (Exception e) {
-                        log.warn("Failed to deserialize delivery event: {}", e.getMessage());
-                        record.receiverOffset().acknowledge();
-                        return Flux.empty();
-                    }
-                })
-                .doOnError(e -> log.error("Delivery pipeline error: {}", e.getMessage(), e))
-                .retry()
+        subscription = kafkaReceiver.receive()
+                .groupBy(record -> record.receiverOffset().topicPartition())
+                .flatMap(partition -> partition.concatMap(this::handleRecord))
+                .doOnError(e -> log.error("Delivery consumer failed, restarting from committed offsets: {}", e.toString()))
+                .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1))
+                        .maxBackoff(Duration.ofSeconds(30))
+                        .transientErrors(true))
                 .subscribe();
         log.info("Delivery event pipeline started");
     }
 
-    private Mono<Void> processDeliveryEvent(DeliveryEvent event) {
+    @PreDestroy
+    void stop() {
+        if (subscription != null) {
+            subscription.dispose();
+        }
+    }
+
+    /** Processes one record; acknowledges it once it is persisted or dead-lettered. */
+    Mono<Void> handleRecord(ReceiverRecord<String, String> record) {
+        deliveryEventsReceived.increment();
+        DeliveryEvent event;
+        try {
+            event = objectMapper.readValue(record.value(), DeliveryEvent.class);
+            String error = event.validationError();
+            if (error != null) {
+                throw new IllegalArgumentException(error);
+            }
+        } catch (Exception e) {
+            return deadLetter(record, null, "MALFORMED: " + e.getMessage());
+        }
+
+        return process(event)
+                .retryWhen(writeRetry)
+                .doOnSuccess(v -> {
+                    deliveryEventsProcessed.increment();
+                    record.receiverOffset().acknowledge();
+                })
+                .onErrorResume(e -> deadLetter(record, event.vanId(),
+                        "DB_WRITE_FAILED: " + rootMessage(e)));
+    }
+
+    private Mono<Void> deadLetter(ReceiverRecord<String, String> record, String vanId, String reason) {
+        log.warn("Dead-lettering delivery record at {}: {}", record.receiverOffset(), reason);
+        return deadLetters.logDeadLetter(record.topic(), vanId, record.value(), reason, false)
+                .retryWhen(writeRetry)
+                .doOnSuccess(v -> {
+                    deliveryEventsDeadLettered.increment();
+                    record.receiverOffset().acknowledge();
+                });
+    }
+
+    Mono<Void> process(DeliveryEvent event) {
         return switch (event.eventType()) {
             case ARRIVAL -> handleArrival(event);
-            case DELIVERY_COMPLETED -> handleCompletion(event, true);
-            case DELIVERY_FAILED -> handleCompletion(event, false);
+            case DELIVERY_COMPLETED -> insertDeliveryLog(event, "COMPLETED", false, 0).then(refreshCounters(event.routeId()));
+            case DELIVERY_FAILED -> insertDeliveryLog(event, "FAILED", false, 0).then(refreshCounters(event.routeId()));
             case DEPARTURE -> handleDeparture(event);
         };
     }
 
     private Mono<Void> handleArrival(DeliveryEvent event) {
-        RouteTracker tracker = routeTrackers.computeIfAbsent(event.routeId(),
-                k -> new RouteTracker(event.vanId(), event.routeId()));
-        if (tracker.startTime == null) {
-            tracker.startTime = event.timestamp();
-        }
-        tracker.totalStops = event.totalStops();
-
-        long breachSeconds = event.slaDeadline() != null && event.timestamp() != null
+        long breachSeconds = event.slaDeadline() != null
                 ? Duration.between(event.slaDeadline(), event.timestamp()).toSeconds()
                 : 0;
         boolean breached = breachSeconds > 0;
 
         Mono<Void> breach = Mono.empty();
         if (breached) {
-            slaBreachesDetected.increment();
             GeofenceDetector.GeofenceResult zone = geofenceDetector.check(event.location());
             UUID zoneId = zone.inGeofence() ? UUID.fromString(zone.zoneId()) : null;
             Instant predicted = etaEngine.initialPrediction(event.vanId(), event.routeId(), event.customerId());
             String severity = breachSeconds > CRITICAL_BREACH_SECONDS ? "CRITICAL" : "WARNING";
-            breach = insertSlaBreach(event, breachSeconds, severity, zoneId, predicted);
+            breach = insertSlaBreach(event, breachSeconds, severity, zoneId, predicted)
+                    .doOnNext(inserted -> {
+                        if (inserted > 0) slaBreachesDetected.increment();
+                    })
+                    .then();
         }
 
         return ensureRoute(event)
                 .then(insertDeliveryLog(event, "IN_PROGRESS", breached, Math.max(0, breachSeconds)))
-                .then(breach)
-                .doOnSuccess(v -> deliveryEventsProcessed.increment())
-                .onErrorResume(e -> {
-                    log.warn("Failed to persist ARRIVAL for van={}: {}", event.vanId(), e.getMessage());
-                    return Mono.empty();
-                });
-    }
-
-    private Mono<Void> handleCompletion(DeliveryEvent event, boolean success) {
-        RouteTracker tracker = routeTrackers.computeIfAbsent(event.routeId(),
-                k -> new RouteTracker(event.vanId(), event.routeId()));
-        if (success) {
-            tracker.completedStops++;
-        } else {
-            tracker.failedStops++;
-        }
-
-        return updateRouteCounters(tracker)
-                .then(insertDeliveryLog(event, success ? "COMPLETED" : "FAILED", false, 0))
-                .doOnSuccess(v -> deliveryEventsProcessed.increment())
-                .onErrorResume(e -> {
-                    log.warn("Failed to persist {} for van={}: {}", event.eventType(), event.vanId(), e.getMessage());
-                    return Mono.empty();
-                });
+                .then(breach);
     }
 
     private Mono<Void> handleDeparture(DeliveryEvent event) {
-        RouteTracker tracker = routeTrackers.get(event.routeId());
-        if (tracker == null) {
-            return Mono.empty();
-        }
-        Mono<Void> result = Mono.empty();
-        if (tracker.completedStops + tracker.failedStops >= tracker.totalStops && tracker.totalStops > 0) {
-            tracker.endTime = event.timestamp();
-            result = completeRoute(tracker);
-            routeTrackers.remove(event.routeId());
-        }
-        return result
-                .doOnSuccess(v -> deliveryEventsProcessed.increment())
-                .onErrorResume(e -> {
-                    log.warn("Failed to persist DEPARTURE for van={}: {}", event.vanId(), e.getMessage());
-                    return Mono.empty();
-                });
+        Mono<Void> departed = db.sql("""
+                UPDATE delivery_logs SET actual_departure = :at
+                WHERE route_id = :routeId AND customer_id = :customerId AND delivery_status = 'IN_PROGRESS'
+                """)
+                .bind("at", event.timestamp())
+                .bind("routeId", event.routeId())
+                .bind("customerId", event.customerId())
+                .then();
+        boolean lastStop = event.stopIndex() >= event.totalStops() - 1;
+        return lastStop ? departed.then(completeRoute(event.routeId(), event.timestamp())) : departed;
     }
 
-    // ═══════════════════ DB Operations ═══════════════════
+    // ═══════════════════ DB Operations (all idempotent) ═══════════════════
 
     /**
      * Creates the route row if the route plan has not done so yet (it normally
@@ -196,70 +213,75 @@ public class DeliveryEventPipeline {
                 .then();
     }
 
-    private Mono<Void> updateRouteCounters(RouteTracker tracker) {
+    /** Recomputes the route's counters from the delivery log. */
+    private Mono<Void> refreshCounters(String routeId) {
         return db.sql("""
-                UPDATE completed_routes
-                SET completed_stops = :completed, failed_stops = :failed
-                WHERE route_id = :routeId
+                UPDATE completed_routes r SET
+                    completed_stops = (SELECT count(*) FROM delivery_logs d
+                                       WHERE d.route_id = r.route_id AND d.delivery_status = 'COMPLETED'),
+                    failed_stops = (SELECT count(*) FROM delivery_logs d
+                                    WHERE d.route_id = r.route_id AND d.delivery_status = 'FAILED')
+                WHERE r.route_id = :routeId
                 """)
-                .bind("completed", tracker.completedStops)
-                .bind("failed", tracker.failedStops)
-                .bind("routeId", tracker.routeId)
+                .bind("routeId", routeId)
                 .then();
     }
 
     /**
-     * Marks the route completed. Distance is the planned route length (until
-     * the archived GPS path is used); speed is in simulated km/h, i.e. the
-     * wall-clock duration scaled by the plan's time scale.
+     * Marks the route completed after its last delivery. Distance is the length
+     * of the archived GPS track from the hub to that stop (the planned distance
+     * if there is no track); speed is in simulated km/h, i.e. distance over
+     * wall-clock duration x time scale, stops included.
      */
-    private Mono<Void> completeRoute(RouteTracker tracker) {
-        Instant start = tracker.startTime != null ? tracker.startTime : Instant.now();
-        Instant end = tracker.endTime != null ? tracker.endTime : Instant.now();
-        double durationMin = Duration.between(start, end).toMillis() / 60_000.0;
-
-        return db.sql("""
-                UPDATE completed_routes
-                SET status = 'COMPLETED',
-                    actual_start = :actualStart,
-                    actual_end = :actualEnd,
-                    total_duration_min = :duration,
-                    completed_stops = :completed,
-                    failed_stops = :failed,
-                    total_distance_km = planned_distance_km,
-                    avg_speed_kmh = CASE
-                        WHEN planned_distance_km IS NOT NULL AND time_scale > 0 AND :duration > 0
-                        THEN LEAST(999.99, planned_distance_km / (:duration / 60.0 * time_scale))
-                    END
+    private Mono<Void> completeRoute(String routeId, Instant end) {
+        Mono<Void> complete = db.sql("""
+                UPDATE completed_routes r SET
+                    status = 'COMPLETED',
+                    actual_start = COALESCE(r.actual_start, r.planned_start),
+                    actual_end = :end,
+                    total_duration_min = EXTRACT(EPOCH FROM (CAST(:end AS timestamptz) - r.planned_start)) / 60.0,
+                    completed_stops = (SELECT count(*) FROM delivery_logs d
+                                       WHERE d.route_id = r.route_id AND d.delivery_status = 'COMPLETED'),
+                    failed_stops = (SELECT count(*) FROM delivery_logs d
+                                    WHERE d.route_id = r.route_id AND d.delivery_status = 'FAILED'),
+                    total_distance_km = COALESCE(
+                        (SELECT ST_Length(ST_MakeLine(a.location ORDER BY a.device_timestamp)::geography) / 1000
+                         FROM gps_archive a WHERE a.route_id = r.route_id HAVING count(*) > 1),
+                        r.planned_distance_km)
+                WHERE r.route_id = :routeId AND r.status <> 'COMPLETED'
+                """)
+                .bind("end", end)
+                .bind("routeId", routeId)
+                .then();
+        Mono<Void> speed = db.sql("""
+                UPDATE completed_routes SET avg_speed_kmh = LEAST(999.99,
+                    total_distance_km / NULLIF(total_duration_min / 60.0 * COALESCE(time_scale, 1), 0))
                 WHERE route_id = :routeId
                 """)
-                .bind("actualStart", start)
-                .bind("actualEnd", end)
-                .bind("duration", Math.round(durationMin * 100) / 100.0)
-                .bind("completed", tracker.completedStops)
-                .bind("failed", tracker.failedStops)
-                .bind("routeId", tracker.routeId)
-                .then()
-                .doOnSuccess(v -> log.info("Route {} COMPLETED: {}/{} stops succeeded",
-                        tracker.routeId, tracker.completedStops, tracker.totalStops));
+                .bind("routeId", routeId)
+                .then();
+        return complete.then(speed)
+                .doOnSuccess(v -> log.info("Route {} completed", routeId));
     }
 
     private Mono<Void> insertDeliveryLog(DeliveryEvent event, String deliveryStatus, boolean breached, long breachSeconds) {
         return db.sql("""
-                INSERT INTO delivery_logs (route_id, van_id, stop_index, customer_id, location,
+                INSERT INTO delivery_logs (event_id, route_id, van_id, stop_index, customer_id, location,
                     sla_deadline, actual_arrival, parcels_delivered, delivery_status, sla_breached, breach_seconds)
-                VALUES (:routeId, :vanId, :stopIndex, :customerId,
+                VALUES (:eventId, :routeId, :vanId, :stopIndex, :customerId,
                     ST_SetSRID(ST_MakePoint(:lon, :lat), 4326),
                     :slaDeadline, :arrival, :parcels, :status, :breached, :breachSeconds)
+                ON CONFLICT (event_id) DO NOTHING
                 """)
+                .bind("eventId", event.eventId())
                 .bind("routeId", event.routeId())
                 .bind("vanId", event.vanId())
                 .bind("stopIndex", event.stopIndex())
                 .bind("customerId", event.customerId())
                 .bind("lon", event.location().longitude())
                 .bind("lat", event.location().latitude())
-                .bind("slaDeadline", event.slaDeadline() != null ? event.slaDeadline() : Instant.now())
-                .bind("arrival", event.timestamp() != null ? event.timestamp() : Instant.now())
+                .bind("slaDeadline", event.slaDeadline() != null ? event.slaDeadline() : event.timestamp())
+                .bind("arrival", event.timestamp())
                 .bind("parcels", event.parcelsDelivered())
                 .bind("status", deliveryStatus)
                 .bind("breached", breached)
@@ -267,16 +289,19 @@ public class DeliveryEventPipeline {
                 .then();
     }
 
-    private Mono<Void> insertSlaBreach(DeliveryEvent event, long breachSeconds, String severity,
+    /** @return rows inserted: 0 when this event's breach was already recorded */
+    private Mono<Long> insertSlaBreach(DeliveryEvent event, long breachSeconds, String severity,
             UUID geofenceId, Instant predictedArrival) {
         DatabaseClient.GenericExecuteSpec spec = db.sql("""
-                INSERT INTO sla_breaches (route_id, van_id, stop_index, customer_id,
+                INSERT INTO sla_breaches (event_id, route_id, van_id, stop_index, customer_id,
                     sla_deadline, predicted_arrival, actual_arrival,
                     breach_seconds, severity, cause, geofence_id)
-                VALUES (:routeId, :vanId, :stopIndex, :customerId,
+                VALUES (:eventId, :routeId, :vanId, :stopIndex, :customerId,
                     :slaDeadline, :predicted, :arrival,
                     :breachSeconds, :severity, 'LATE_ARRIVAL', :geofenceId)
+                ON CONFLICT (event_id) DO NOTHING
                 """)
+                .bind("eventId", event.eventId())
                 .bind("routeId", event.routeId())
                 .bind("vanId", event.vanId())
                 .bind("stopIndex", event.stopIndex())
@@ -287,23 +312,14 @@ public class DeliveryEventPipeline {
                 .bind("severity", severity);
         spec = predictedArrival != null ? spec.bind("predicted", predictedArrival) : spec.bindNull("predicted", Instant.class);
         spec = geofenceId != null ? spec.bind("geofenceId", geofenceId) : spec.bindNull("geofenceId", UUID.class);
-        return spec.then();
+        return spec.fetch().rowsUpdated();
     }
 
-    // ═══════════════════ Route Tracker ═══════════════════
-
-    private static class RouteTracker {
-        final String vanId;
-        final String routeId;
-        Instant startTime;
-        Instant endTime;
-        int totalStops;
-        int completedStops;
-        int failedStops;
-
-        RouteTracker(String vanId, String routeId) {
-            this.vanId = vanId;
-            this.routeId = routeId;
+    private static String rootMessage(Throwable e) {
+        Throwable t = e;
+        while (t.getCause() != null && t.getCause() != t) {
+            t = t.getCause();
         }
+        return t.getClass().getSimpleName() + ": " + t.getMessage();
     }
 }

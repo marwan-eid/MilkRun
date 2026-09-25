@@ -49,3 +49,20 @@ groups:
           severity: warning
         annotations:
           summary: "Malformed GPS events on the gps-events topic"
+
+      - alert: MilkRunDeliveryRecordsDeadLettered
+        expr: sum(increase(milkrun_delivery_events_dead_lettered_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Delivery records moved to the dead-letter log"
+          description: "Malformed records or writes that kept failing; see dead_letter_log."
+
+      - alert: MilkRunGpsArchiveDropping
+        expr: sum(rate(milkrun_gps_archive_dropped_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GPS archive is dropping points"
+          description: "The database is slow or unavailable; route distances will be computed from fewer points."

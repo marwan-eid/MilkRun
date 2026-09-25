@@ -5,8 +5,8 @@ import com.milkrun.model.Location;
 import com.milkrun.model.VanStatus;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -14,106 +14,94 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class ReorderBufferTest {
 
-    private GpsEvent makeEvent(String vanId, long seqNum, Instant timestamp) {
-        return new GpsEvent(
-                UUID.randomUUID(), vanId, seqNum, timestamp, Instant.now(),
-                new Location(52.37, 4.90), 25.0, 90.0, 80,
-                "route-test", 0, 10, VanStatus.EN_ROUTE);
+    private static final Instant T0 = Instant.parse("2026-09-25T10:00:00Z");
+
+    private static ReorderBuffer<GpsEvent> buffer(long graceMs, int maxSize) {
+        return new ReorderBuffer<>(Duration.ofMillis(graceMs), maxSize,
+                GpsEvent::vanId, GpsEvent::deviceTimestamp, GpsEvent::sequenceNumber,
+                e -> e.status() == VanStatus.RETURNED);
+    }
+
+    private static GpsEvent event(String vanId, long seq, Instant at) {
+        return event(vanId, seq, at, VanStatus.EN_ROUTE);
+    }
+
+    private static GpsEvent event(String vanId, long seq, Instant at, VanStatus status) {
+        return new GpsEvent(UUID.randomUUID(), vanId, seq, at, at,
+                new Location(52.37, 4.90), 25.0, 90.0, 80, "route-test", 0, 10, status);
+    }
+
+    private static List<Long> seqs(List<GpsEvent> events) {
+        return events.stream().map(GpsEvent::sequenceNumber).toList();
     }
 
     @Test
-    void shouldBufferEventsWithinGraceWindow() {
-        ReorderBuffer buffer = new ReorderBuffer(5000, 50); // 5s grace
-        Instant now = Instant.now();
-
-        // Events within grace window should not be flushed immediately
-        List<GpsEvent> result = buffer.addAndFlush(makeEvent("van-001", 1, now));
-        assertTrue(result.isEmpty(), "Events within grace window should be buffered");
+    void holdsEventsInsideTheGraceWindow() {
+        ReorderBuffer<GpsEvent> buffer = buffer(3000, 50);
+        buffer.offer(event("van-001", 1, T0));
+        assertTrue(buffer.drainReady(T0.plusMillis(2999)).isEmpty());
+        assertEquals(1, buffer.size());
     }
 
     @Test
-    void shouldFlushEventsAfterGraceWindow() {
-        ReorderBuffer buffer = new ReorderBuffer(100, 50); // 100ms grace
+    void releasesEventsInTimestampOrderOnceTheGraceWindowPasses() {
+        ReorderBuffer<GpsEvent> buffer = buffer(3000, 50);
+        buffer.offer(event("van-001", 3, T0.plusMillis(1000)));
+        buffer.offer(event("van-001", 1, T0));
+        buffer.offer(event("van-001", 2, T0.plusMillis(500)));
 
-        // Add events with old timestamps (well past grace window)
-        Instant past = Instant.now().minusSeconds(5);
-        GpsEvent event1 = makeEvent("van-001", 1, past);
-        GpsEvent event2 = makeEvent("van-001", 2, past.plusMillis(50));
-
-        // Collect all flushed events across both calls
-        List<GpsEvent> allFlushed = new ArrayList<>();
-        allFlushed.addAll(buffer.addAndFlush(event1));
-        allFlushed.addAll(buffer.addAndFlush(event2));
-
-        // Both events should have been flushed (they're past the grace window)
-        assertEquals(2, allFlushed.size(), "Events past grace window should be flushed");
-        // Should be in chronological order
-        assertTrue(allFlushed.get(0).sequenceNumber() <= allFlushed.get(1).sequenceNumber());
+        assertEquals(List.of(1L, 2L), seqs(buffer.drainReady(T0.plusMillis(3600))));
+        assertEquals(List.of(3L), seqs(buffer.drainReady(T0.plusMillis(4100))));
+        assertEquals(0, buffer.size());
     }
 
     @Test
-    void shouldReorderOutOfOrderEvents() {
-        // Use a grace window that's long enough to hold all events,
-        // then trigger flush via buffer overflow
-        ReorderBuffer buffer = new ReorderBuffer(60000, 3); // large grace, tiny buffer
+    void rejectsEventsOlderThanOneAlreadyReleased() {
+        ReorderBuffer<GpsEvent> buffer = buffer(1000, 50);
+        buffer.offer(event("van-001", 5, T0.plusMillis(500)));
+        assertEquals(1, buffer.drainReady(T0.plusSeconds(2)).size());
 
-        Instant now = Instant.now();
+        assertFalse(buffer.offer(event("van-001", 4, T0)), "older than what was already released");
+        assertTrue(buffer.offer(event("van-001", 6, T0.plusMillis(600))));
+        assertTrue(buffer.offer(event("van-002", 1, T0)), "other vans are unaffected");
+    }
 
-        // Send events out of order — all with fresh timestamps within grace
-        GpsEvent event3 = makeEvent("van-001", 3, now.plusMillis(200));
-        GpsEvent event1 = makeEvent("van-001", 1, now);
-        GpsEvent event2 = makeEvent("van-001", 2, now.plusMillis(100));
+    @Test
+    void terminalEventReleasesTheVanImmediately() {
+        ReorderBuffer<GpsEvent> buffer = buffer(60_000, 50);
+        buffer.offer(event("van-001", 2, T0.plusMillis(100)));
+        buffer.offer(event("van-001", 3, T0.plusMillis(200), VanStatus.RETURNED));
+        buffer.offer(event("van-001", 1, T0));
+        buffer.offer(event("van-002", 1, T0));
 
-        List<GpsEvent> allFlushed = new ArrayList<>();
-        allFlushed.addAll(buffer.addAndFlush(event3)); // buffered (1/3)
-        allFlushed.addAll(buffer.addAndFlush(event1)); // buffered (2/3)
-        allFlushed.addAll(buffer.addAndFlush(event2)); // buffered (3/3) — no overflow yet
+        assertEquals(List.of(1L, 2L, 3L), seqs(buffer.drainReady(T0.plusMillis(300))));
+        assertEquals(1, buffer.size(), "van-002 still waits for its grace window");
+    }
 
-        // Add one more event to trigger overflow flush (buffer max = 3, now 4th
-        // triggers)
-        GpsEvent event4 = makeEvent("van-001", 4, now.plusMillis(300));
-        allFlushed.addAll(buffer.addAndFlush(event4)); // overflow → force flush
-
-        // All events should have been flushed in timestamp order
-        assertTrue(allFlushed.size() >= 3, "Should have flushed at least 3 events, got: " + allFlushed.size());
-        // Verify chronological ordering
-        for (int i = 1; i < allFlushed.size(); i++) {
-            assertTrue(
-                    allFlushed.get(i).deviceTimestamp().compareTo(allFlushed.get(i - 1).deviceTimestamp()) >= 0,
-                    "Events should be in chronological order");
+    @Test
+    void overflowReleasesTheVanImmediately() {
+        ReorderBuffer<GpsEvent> buffer = buffer(60_000, 3);
+        for (int i = 4; i >= 1; i--) {
+            buffer.offer(event("van-001", i, T0.plusMillis(i * 100L)));
         }
+        assertEquals(List.of(1L, 2L, 3L, 4L), seqs(buffer.drainReady(T0.plusMillis(500))));
     }
 
     @Test
-    void shouldForceFlushOnBufferOverflow() {
-        ReorderBuffer buffer = new ReorderBuffer(60000, 3); // large grace, small buffer
-
-        Instant now = Instant.now();
-        List<GpsEvent> allFlushed = new ArrayList<>();
-
-        for (int i = 0; i < 5; i++) {
-            List<GpsEvent> flushed = buffer.addAndFlush(
-                    makeEvent("van-001", i, now.plusMillis(i * 100)));
-            allFlushed.addAll(flushed);
-        }
-
-        // Buffer should force-flush when exceeding maxSize
-        assertFalse(allFlushed.isEmpty(), "Should force-flush on overflow");
+    void sameTimestampIsOrderedBySequence() {
+        ReorderBuffer<GpsEvent> buffer = buffer(100, 50);
+        buffer.offer(event("van-001", 8, T0));
+        buffer.offer(event("van-001", 7, T0));
+        assertEquals(List.of(7L, 8L), seqs(buffer.drainReady(T0.plusSeconds(1))));
     }
 
     @Test
-    void shouldIsolateVanBuffers() {
-        ReorderBuffer buffer = new ReorderBuffer(100, 50);
-        Instant past = Instant.now().minusSeconds(5);
-
-        // Add events for two different vans — these will flush immediately (past grace)
-        List<GpsEvent> van1First = buffer.addAndFlush(makeEvent("van-001", 1, past));
-        List<GpsEvent> van2First = buffer.addAndFlush(makeEvent("van-002", 1, past));
-
-        // Each van's events should flush independently
-        assertEquals(1, van1First.size(), "Van-001 event should flush");
-        assertEquals(1, van2First.size(), "Van-002 event should flush");
-        assertEquals("van-001", van1First.get(0).vanId());
-        assertEquals("van-002", van2First.get(0).vanId());
+    void isolatesVans() {
+        ReorderBuffer<GpsEvent> buffer = buffer(100, 50);
+        buffer.offer(event("van-001", 1, T0));
+        buffer.offer(event("van-002", 1, T0.plusSeconds(10)));
+        List<GpsEvent> out = buffer.drainReady(T0.plusSeconds(1));
+        assertEquals(1, out.size());
+        assertEquals("van-001", out.get(0).vanId());
     }
 }

@@ -21,4 +21,14 @@ public record DeliveryEvent(
         @JsonProperty("sla_deadline") Instant slaDeadline,
         @JsonProperty("total_stops") int totalStops,
         @JsonProperty("notes") String notes) {
+
+    /** @return null if the event can be processed, otherwise what is missing. */
+    public String validationError() {
+        if (eventId == null) return "missing event_id";
+        if (vanId == null || routeId == null || customerId == null) return "missing van_id, route_id or customer_id";
+        if (eventType == null) return "missing event_type";
+        if (timestamp == null) return "missing timestamp";
+        if (location == null) return "missing location";
+        return null;
+    }
 }

@@ -22,4 +22,15 @@ public record GpsEvent(
     @JsonProperty("current_stop_index") int currentStopIndex,
     @JsonProperty("total_stops") int totalStops,
     @JsonProperty("status") VanStatus status
-) {}
+) {
+
+    /** @return null if the event can be processed, otherwise what is missing. */
+    public String validationError() {
+        if (eventId == null) return "missing event_id";
+        if (vanId == null || routeId == null) return "missing van_id or route_id";
+        if (deviceTimestamp == null) return "missing device_timestamp";
+        if (location == null) return "missing location";
+        if (status == null) return "missing status";
+        return null;
+    }
+}

@@ -34,11 +34,20 @@ milkrun:
     route-plans-topic: route-plans
     dispatch-topic: dispatch-events
     consumer-group: milkrun-engine
+    # Where a new consumer group starts; tests use earliest
+    auto-offset-reset: latest
+    # How often acknowledged offsets are committed
+    commit-interval: 5s
   pipeline:
     dedup-expected-insertions: 100000
     dedup-false-positive-rate: 0.001
     reorder-buffer-grace-ms: 3000
     reorder-buffer-max-size: 50
+    # How often the reorder buffer releases events past the grace window
+    release-interval-ms: 100
+  archive:
+    # At most one archived GPS point per van per interval (device time)
+    min-interval: 2s
   eta:
     # Slack = deadline - predicted arrival (wall-clock seconds).
     # Below the critical buffer the stop is projected to miss its slot.

@@ -181,8 +181,8 @@ public class RoutePlanStore {
     }
 
     /**
-     * Upserts the planned side of the route. Older plan versions never
-     * overwrite newer ones, so replaying the topic is harmless.
+     * Upserts the planned side of the route (hub to last delivery). Older plan
+     * versions never overwrite newer ones, so replaying the topic is harmless.
      */
     private Mono<Void> recordPlannedRoute(PlannedRoute planned) {
         RoutePlan plan = planned.plan();
@@ -190,11 +190,11 @@ public class RoutePlanStore {
         if (db == null || plan.stops().isEmpty()) {
             return Mono.empty();
         }
+        // A route is "completed" after its last delivery, so planned figures cover
+        // the same span as the actual ones: hub to the last stop, plus its dwell.
         RoutePlan.Stop lastStop = plan.stops().get(plan.stops().size() - 1);
-        double returnLegSec = (geometry.length() - geometry.distanceAt(lastStop.waypointIndex()))
-                / (plan.baseSpeedKmh() / 3.6);
-        Instant plannedEnd = lastStop.plannedArrival()
-                .plusMillis((long) ((returnLegSec + 40) / plan.timeScale() * 1000));
+        double toLastStopMeters = geometry.distanceAt(lastStop.waypointIndex());
+        Instant plannedEnd = lastStop.plannedArrival().plusMillis((long) (40 / plan.timeScale() * 1000));
         Instant plannedStart = plan.createdAt() != null ? plan.createdAt() : Instant.now();
 
         return db.sql("""
@@ -219,7 +219,7 @@ public class RoutePlanStore {
                 .bind("totalStops", plan.stops().size())
                 .bind("version", plan.version())
                 .bind("timeScale", plan.timeScale())
-                .bind("distanceKm", Math.round(geometry.length() / 10.0) / 100.0)
+                .bind("distanceKm", Math.round(toLastStopMeters / 10.0) / 100.0)
                 .then();
     }
 }
