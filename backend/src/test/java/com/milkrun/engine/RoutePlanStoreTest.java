@@ -80,6 +80,24 @@ class RoutePlanStoreTest {
     }
 
     @Test
+    void aReplayedBatchEndsWhereOneByOneWould() throws Exception {
+        ObjectMapper json = new ObjectMapper().findAndRegisterModules();
+        Instant t = Instant.parse("2026-09-25T10:00:00Z");
+        store.acceptAll(List.of(
+                json.writeValueAsString(plan("r1", 0, t, 2)),
+                json.writeValueAsString(plan("r1", 1, t, 2)),
+                json.writeValueAsString(plan("r2", 0, t.plusSeconds(900), 2)),
+                json.writeValueAsString(plan("r1", 5, t, 2)), // late record of the previous route
+                json.writeValueAsString(plan("r2", 1, t.plusSeconds(900), 99)), // malformed
+                "{not json")).block();
+
+        assertEquals(0, store.get("van-001", "r2").orElseThrow().plan().version());
+        assertTrue(store.get("van-001", "r1").isEmpty());
+        assertEquals(5.0, registry.find("milkrun.route_plans.received").counter().count(), "every readable plan");
+        assertEquals(3.0, registry.find("milkrun.route_plans.rejected").counter().count());
+    }
+
+    @Test
     void rebuildsGeometryWhenZonesChange() {
         GeofenceDetector zones = GeofenceDetector.withZones(List.of());
         RoutePlanStore s = new RoutePlanStore(new ObjectMapper().findAndRegisterModules(), zones, null,

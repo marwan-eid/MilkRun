@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.kafka.receiver.KafkaReceiver;
 import reactor.kafka.receiver.ReceiverOptions;
@@ -23,6 +25,7 @@ import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -86,7 +89,11 @@ public class RoutePlanStore {
                 .subscription(List.of(topic));
 
         subscription = KafkaReceiver.create(options).receive()
-                .concatMap(record -> accept(record.value()))
+                // After a restart the replay delivers every plan each van ever had
+                // (compaction lags behind), so records are handled in batches and
+                // only each van's newest plan in a batch is prepared and recorded.
+                .bufferTimeout(500, Duration.ofMillis(200), true)
+                .concatMap(batch -> acceptAll(batch.stream().map(ConsumerRecord::value).toList()))
                 .retryWhen(Retry.backoff(Long.MAX_VALUE, Duration.ofSeconds(1)).maxBackoff(Duration.ofSeconds(30))
                         .doBeforeRetry(s -> log.warn("Route plan consumer restarting: {}", s.failure().toString())))
                 .subscribe();
@@ -102,14 +109,55 @@ public class RoutePlanStore {
 
     /** Parses, stores and records one plan. Bad plans are counted and skipped. */
     Mono<Void> accept(String json) {
-        RoutePlan plan;
+        return acceptAll(List.of(json));
+    }
+
+    /**
+     * Same outcome as accepting the plans one by one, in order, but only the
+     * plan each van ends up with is prepared (geometry) and recorded; plans a
+     * later one in the batch supersedes are counted and skipped.
+     */
+    Mono<Void> acceptAll(List<String> batch) {
+        Map<String, RoutePlan> winners = new LinkedHashMap<>();
+        for (String json : batch) {
+            RoutePlan plan = parse(json);
+            if (plan == null) {
+                continue;
+            }
+            if (plan.validationError() != null) {
+                put(plan); // counts and logs the rejection
+                continue;
+            }
+            RoutePlan current = winners.containsKey(plan.vanId()) ? winners.get(plan.vanId()) : held(plan.vanId());
+            if (current == null || isNewer(plan, current)) {
+                if (winners.put(plan.vanId(), plan) != null) {
+                    plansReceived.increment(); // the plan it replaces
+                }
+            } else {
+                plansReceived.increment();
+                plansRejected.increment();
+            }
+        }
+        return Flux.fromIterable(winners.values()).concatMap(this::store).then();
+    }
+
+    private RoutePlan parse(String json) {
         try {
-            plan = objectMapper.readValue(json, RoutePlan.class);
+            return objectMapper.readValue(json, RoutePlan.class);
         } catch (Exception e) {
             plansRejected.increment();
             log.warn("Unreadable route plan: {}", e.getMessage());
-            return Mono.empty();
+            return null;
         }
+    }
+
+    private RoutePlan held(String vanId) {
+        PlannedRoute planned = byVan.get(vanId);
+        return planned != null ? planned.plan() : null;
+    }
+
+    /** Stores the plan and records its planned figures. */
+    private Mono<Void> store(RoutePlan plan) {
         PlannedRoute stored = put(plan);
         if (stored == null) {
             return Mono.empty();
