@@ -67,7 +67,10 @@ public class GpsArchiveRepository {
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
         writer = queue.asFlux()
-                .bufferTimeout(200, Duration.ofSeconds(1))
+                // Fair backpressure: while an insert is still running, a full or
+                // timed-out batch waits for it instead of failing the whole writer
+                // with an OverflowException (which stopped archiving on a slow VM).
+                .bufferTimeout(200, Duration.ofSeconds(1), true)
                 .concatMap(batch -> insert(batch)
                         .retryWhen(Retry.backoff(3, Duration.ofMillis(500)))
                         .onErrorResume(e -> {
@@ -75,7 +78,7 @@ public class GpsArchiveRepository {
                             dropped.increment(batch.size());
                             return Mono.empty();
                         }))
-                .subscribe();
+                .subscribe(null, e -> log.error("GPS archive writer stopped", e));
     }
 
     @PreDestroy
