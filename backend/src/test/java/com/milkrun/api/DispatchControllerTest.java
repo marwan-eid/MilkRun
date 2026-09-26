@@ -5,8 +5,10 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.milkrun.dispatch.DispatchPlanner;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.test.web.reactive.server.WebTestClient;
 
+import java.net.InetSocketAddress;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -101,6 +103,16 @@ class DispatchControllerTest {
         post("198.51.100.1", 52.36, 4.90).expectStatus().isEqualTo(429).expectHeader().exists("Retry-After");
         post("198.51.100.2", 52.36, 4.90).expectStatus().isAccepted();
         assertEquals(3, publisher.payloads.size());
+    }
+
+    @Test
+    void clientKeyUsesTheForwardedAddressSpringAlreadyApplied() {
+        // forward-headers-strategy=framework turns X-Forwarded-For into an
+        // unresolved remote address and drops the header.
+        var request = MockServerHttpRequest.post("/api/dispatch")
+                .remoteAddress(InetSocketAddress.createUnresolved("198.51.100.9", 0))
+                .build();
+        assertEquals("198.51.100.9", DispatchController.clientKey(request));
     }
 
     @Test

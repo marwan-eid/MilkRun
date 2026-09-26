@@ -308,7 +308,23 @@ class PipelineIntegrationTest {
         send("gps-events", van, gps(van, route, 1, Instant.now(), 5, 4.95));
         await().atMost(Duration.ofSeconds(30)).until(() -> etaEngine.getAllVanStates().containsKey(van));
 
+        // A page on another origin is still refused by CORS...
+        webClient.post().uri("/api/dispatch")
+                .header("Origin", "https://elsewhere.example")
+                .header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-Host", "dashboard.example")
+                .header("Content-Type", "application/json")
+                .bodyValue("{\"latitude\":52.3070,\"longitude\":4.9510}")
+                .exchange()
+                .expectStatus().isForbidden();
+
+        // ...while the dashboard behind the proxies is recognised as same-origin
+        // (browsers send Origin on every POST, and that origin is not on the allow-list).
         var response = webClient.post().uri("/api/dispatch")
+                .header("Origin", "https://dashboard.example")
+                .header("X-Forwarded-Proto", "https")
+                .header("X-Forwarded-Host", "dashboard.example")
+                .header("X-Forwarded-For", "203.0.113.50, 172.18.0.6")
                 .header("Content-Type", "application/json")
                 .bodyValue("{\"latitude\":52.3070,\"longitude\":4.9510}")
                 .exchange()

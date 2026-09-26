@@ -97,6 +97,10 @@ management:
 
 server:
   port: 8080
+  # Behind Caddy and nginx: take scheme, host and client address from the
+  # X-Forwarded-* headers, so a same-origin browser request is recognised as
+  # such by CORS. The backend port is never exposed outside the proxies.
+  forward-headers-strategy: framework
 
 logging:
   level:

@@ -111,7 +111,9 @@ public class DispatchController {
     /**
      * Identifies the caller for rate limiting. Behind Caddy and nginx the first
      * X-Forwarded-For entry is the client address (Caddy replaces any value the
-     * client sent itself); without a proxy it is the socket address.
+     * client sent itself). With forward-headers-strategy=framework Spring has
+     * already moved it into the remote address, as an unresolved address, and
+     * removed the header; without a proxy the remote address is the socket's.
      */
     static String clientKey(ServerHttpRequest request) {
         String forwarded = request.getHeaders().getFirst("X-Forwarded-For");
@@ -119,7 +121,7 @@ public class DispatchController {
             return forwarded.split(",")[0].trim();
         }
         InetSocketAddress remote = request.getRemoteAddress();
-        return remote != null && remote.getAddress() != null ? remote.getAddress().getHostAddress() : "unknown";
+        return remote != null ? remote.getHostString() : "unknown";
     }
 
     record ServiceArea(double minLat, double maxLat, double minLon, double maxLon) {
