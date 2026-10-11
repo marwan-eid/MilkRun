@@ -1,5 +1,7 @@
 package com.milkrun.observability;
 
+import com.milkrun.fleet.FleetView;
+import com.milkrun.model.VanState;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
@@ -18,12 +20,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.DoubleSupplier;
+import java.util.function.Supplier;
 
 /**
  * Rolling view of the GPS pipeline over the last few minutes.
@@ -32,6 +36,8 @@ import java.util.function.DoubleSupplier;
  * that suddenly rejects 99% of events still shows a modest lifetime rejection
  * rate. This samples the Micrometer counters periodically and reports rates
  * over a sliding window, plus a status that external checks can alert on.
+ * The status also covers what the counters cannot show: vans that went silent
+ * while others still report, and a disk that is filling up.
  */
 @Component
 public class PipelineHealthMonitor {
@@ -51,6 +57,8 @@ public class PipelineHealthMonitor {
     private final double maxRejectionRate;
     private final DoubleSupplier diskFree;
     private final double minDiskFree;
+    private final Supplier<Collection<Instant>> vanLastSeen;
+    private final double maxSilentVans;
     private final Deque<Sample> samples = new ArrayDeque<>();
     private Disposable sampler;
 
@@ -60,18 +68,27 @@ public class PipelineHealthMonitor {
             @Value("${milkrun.health.window:5m}") Duration window,
             @Value("${milkrun.health.sample-interval:15s}") Duration sampleInterval,
             @Value("${milkrun.health.max-dedup-rejection-rate:0.20}") double maxRejectionRate,
-            @Value("${milkrun.health.min-disk-free:0.15}") double minDiskFree) {
+            @Value("${milkrun.health.min-disk-free:0.15}") double minDiskFree,
+            @Value("${milkrun.health.max-silent-vans:0.05}") double maxSilentVans,
+            FleetView fleet) {
         this(registry, Clock.systemUTC(), window, sampleInterval, maxRejectionRate,
-                PipelineHealthMonitor::diskFreeFraction, minDiskFree);
+                PipelineHealthMonitor::diskFreeFraction, minDiskFree,
+                () -> fleet.all().stream().map(VanState::lastUpdated).toList(), maxSilentVans);
     }
 
     PipelineHealthMonitor(MeterRegistry registry, Clock clock, Duration window,
             Duration sampleInterval, double maxRejectionRate) {
-        this(registry, clock, window, sampleInterval, maxRejectionRate, () -> 1.0, 0);
+        this(registry, clock, window, sampleInterval, maxRejectionRate, () -> 1.0, 0, List::of, 1);
     }
 
+    /**
+     * @param diskFree      free share of the disk, 0 to 1
+     * @param vanLastSeen   when each known van last reported
+     * @param maxSilentVans share of the fleet that may be silent for a whole window
+     */
     PipelineHealthMonitor(MeterRegistry registry, Clock clock, Duration window,
-            Duration sampleInterval, double maxRejectionRate, DoubleSupplier diskFree, double minDiskFree) {
+            Duration sampleInterval, double maxRejectionRate, DoubleSupplier diskFree, double minDiskFree,
+            Supplier<Collection<Instant>> vanLastSeen, double maxSilentVans) {
         this.registry = registry;
         this.clock = clock;
         this.window = window;
@@ -79,6 +96,8 @@ public class PipelineHealthMonitor {
         this.maxRejectionRate = maxRejectionRate;
         this.diskFree = diskFree;
         this.minDiskFree = minDiskFree;
+        this.vanLastSeen = vanLastSeen;
+        this.maxSilentVans = maxSilentVans;
     }
 
     /**
@@ -148,6 +167,17 @@ public class PipelineHealthMonitor {
         double free = diskFree.getAsDouble();
         if (free < minDiskFree) {
             problems.add(String.format("disk is %.0f%% full (limit %.0f%%)", (1 - free) * 100, (1 - minDiskFree) * 100));
+        }
+        // Part of the fleet can stop reporting while the rest keeps the counters
+        // moving (a Kafka partition that stops taking writes silences its vans).
+        // No healthy van stays quiet for a whole window: dead zones last seconds,
+        // and a van that finished its route starts a new one right away.
+        Collection<Instant> lastSeen = vanLastSeen.get();
+        Instant silentBefore = now.minus(window);
+        long silent = lastSeen.stream().filter(seen -> seen != null && seen.isBefore(silentBefore)).count();
+        if (silent > lastSeen.size() * maxSilentVans) {
+            problems.add(String.format("%d of %d vans have not reported in the last %d min",
+                    silent, lastSeen.size(), window.toMinutes()));
         }
 
         Status status = !problems.isEmpty() ? Status.DEGRADED : fullWindow ? Status.OK : Status.WARMING_UP;

@@ -107,6 +107,19 @@ backwards.
 zones (0.5% chance per ping, 2–10 s) buffer pings on the van, losing 10%, and
 upload the backlog 1–6 s after reconnecting.
 
+**Sending** (`kafka-producer.ts`, `batcher.ts`). GPS pings from all vans go
+out as one request per 100 ms, at most 500 pings each, and only one request
+at a time: while the broker is slow, pings wait (up to 20,000, then the
+oldest are dropped) and leave in the next batch. Delivery is at-least-once.
+The producer is deliberately not idempotent: KafkaJS's idempotent mode loses
+track of its sequence numbers when the broker stalls past the request timeout
+and then rejects every later send, and the pipeline deduplicates and reorders
+anyway.
+
+**Watchdog** (`send-watchdog.ts`). If GPS, delivery or route-plan sends have
+all failed, or one has been hanging, for two minutes, the simulator exits
+with a non-zero code and the container's restart policy starts a fresh one.
+
 ## 4. Backend
 
 ### 4.1 GPS pipeline (`consumer/GpsEventPipeline.java`)
@@ -209,11 +222,15 @@ CORS allows the configured origins only (`milkrun.cors.allowed-origins`).
 
 - `/api/observability/health`: status (`WARMING_UP`, `OK`, `DEGRADED`) from
   rates over the last 5 minutes (`PipelineHealthMonitor`), latency
-  percentiles, dedup strategy and counters.
+  percentiles, dedup strategy and counters. `DEGRADED` when no events arrive,
+  events arrive but none are processed, dedup rejects over 20%, more than 5%
+  of the known vans have been silent for 5 minutes, or the disk is over 85%
+  full.
 - Prometheus alert rules (`infra/prometheus/alerts.yml`) and a Grafana
   dashboard (`infra/grafana/dashboards/milkrun.json`), provisioned in the dev
   compose file and in the production `monitoring` profile.
-- `.github/workflows/health-check.yml` probes the live demo every 15 minutes.
+- `.github/workflows/health-check.yml` probes the live demo on a 15-minute
+  schedule and fails when it is still `DEGRADED` after four looks 90 s apart.
 
 ## 5. Database (`backend/src/main/resources/db/migration`)
 

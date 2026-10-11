@@ -2,9 +2,15 @@ import { Kafka, Producer, Partitioners, CompressionTypes, type ITopicConfig } fr
 import { type GpsEvent, type DeliveryEvent, type RoutePlanMessage } from './models/index.js';
 import { type EventSink } from './van-simulator.js';
 import { Batcher } from './batcher.js';
+import { SendWatchdog } from './send-watchdog.js';
 
 /** How long GPS pings wait to be sent together (ms). */
 const GPS_LINGER_MS = parseInt(process.env.GPS_LINGER_MS || '100', 10);
+/** Pings per request, and how many may wait while the broker is slow before the oldest are dropped. */
+const GPS_MAX_BATCH = parseInt(process.env.GPS_MAX_BATCH || '500', 10);
+const GPS_MAX_BACKLOG = parseInt(process.env.GPS_MAX_BACKLOG || '20000', 10);
+/** How long a kind of send may keep failing or hanging before the simulator gives up and restarts (ms). */
+const SEND_STALL_MS = parseInt(process.env.SEND_STALL_MS || '120000', 10);
 
 export const TOPICS = {
     gps: 'gps-events',
@@ -55,7 +61,13 @@ const REQUIRED_TOPICS: ITopicConfig[] = [
  * Kafka producer for the simulator.
  *
  * - Keyed by van_id, so each van's events stay ordered within one partition
- * - Idempotent producer; GPS pings batched and uncompressed, other events GZIP
+ * - At-least-once: a send that fails or times out is retried, which can deliver
+ *   a record twice or out of order. That is the stream the pipeline is built
+ *   for (it deduplicates and reorders), so the producer is deliberately not
+ *   idempotent: KafkaJS's idempotent mode loses track of its sequence numbers
+ *   when the broker stalls past the request timeout, and then rejects every
+ *   later send until the process is restarted.
+ * - GPS pings batched, one request at a time, uncompressed; other events GZIP
  * - Sets ingestion_timestamp when a GPS event is sent
  */
 export class KafkaEventProducer implements EventSink {
@@ -67,11 +79,17 @@ export class KafkaEventProducer implements EventSink {
     private _deliverySent = 0;
     private _plansSent = 0;
     private _errors = 0;
+    private _gpsDropped = 0;
+
+    private readonly watchdog = new SendWatchdog(SEND_STALL_MS);
 
     // Pings from all vans are sent in one request every GPS_LINGER_MS instead of
     // one request each, uncompressed: on a small VM that is the difference
     // between the simulator saturating the CPU and not.
-    private readonly gpsBatcher = new Batcher<GpsEvent>((batch) => this.sendGpsBatch(batch), GPS_LINGER_MS);
+    private readonly gpsBatcher = new Batcher<GpsEvent>(
+        (batch) => this.sendGpsBatch(batch), GPS_LINGER_MS, GPS_MAX_BATCH, GPS_MAX_BACKLOG,
+        (dropped) => { this._gpsDropped += dropped; },
+    );
 
     constructor(private readonly brokers: string[] = ['localhost:9092']) {
         this.kafka = new Kafka({
@@ -82,8 +100,6 @@ export class KafkaEventProducer implements EventSink {
         this.producer = this.kafka.producer({
             createPartitioner: Partitioners.DefaultPartitioner,
             allowAutoTopicCreation: false,
-            idempotent: true,
-            maxInFlightRequests: 5,
         });
     }
 
@@ -128,14 +144,14 @@ export class KafkaEventProducer implements EventSink {
 
     private async sendGpsBatch(events: GpsEvent[]): Promise<void> {
         try {
-            await this.producer.send({
+            await this.watchdog.track('gps', () => this.producer.send({
                 topic: TOPICS.gps,
                 messages: events.map((event) => ({
                     key: event.van_id,
                     value: JSON.stringify({ ...event, ingestion_timestamp: new Date().toISOString() }),
                     headers: { 'event-type': 'GPS_PING', 'van-id': event.van_id },
                 })),
-            });
+            }));
             this._gpsSent += events.length;
         } catch (err) {
             this._errors++;
@@ -145,7 +161,7 @@ export class KafkaEventProducer implements EventSink {
 
     async sendDeliveryEvent(event: DeliveryEvent): Promise<void> {
         try {
-            await this.producer.send({
+            await this.watchdog.track('delivery', () => this.producer.send({
                 topic: TOPICS.delivery,
                 compression: CompressionTypes.GZIP,
                 messages: [{
@@ -153,7 +169,7 @@ export class KafkaEventProducer implements EventSink {
                     value: JSON.stringify(event),
                     headers: { 'event-type': event.event_type, 'van-id': event.van_id, 'route-id': event.route_id },
                 }],
-            });
+            }));
             this._deliverySent++;
         } catch (err) {
             this._errors++;
@@ -163,7 +179,7 @@ export class KafkaEventProducer implements EventSink {
 
     async sendRoutePlan(plan: RoutePlanMessage): Promise<void> {
         try {
-            await this.producer.send({
+            await this.watchdog.track('route plans', () => this.producer.send({
                 topic: TOPICS.routePlans,
                 compression: CompressionTypes.GZIP,
                 messages: [{
@@ -171,7 +187,7 @@ export class KafkaEventProducer implements EventSink {
                     value: JSON.stringify(plan),
                     headers: { 'route-id': plan.route_id, 'version': String(plan.version) },
                 }],
-            });
+            }));
             this._plansSent++;
         } catch (err) {
             this._errors++;
@@ -185,6 +201,12 @@ export class KafkaEventProducer implements EventSink {
             deliverySent: this._deliverySent,
             plansSent: this._plansSent,
             errors: this._errors,
+            gpsDropped: this._gpsDropped,
         };
+    }
+
+    /** Kinds of send that have not got through for SEND_STALL_MS despite trying; empty when healthy. */
+    get stalled(): string[] {
+        return this.watchdog.stalled();
     }
 }

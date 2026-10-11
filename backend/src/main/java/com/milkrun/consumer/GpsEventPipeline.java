@@ -149,7 +149,15 @@ public class GpsEventPipeline {
 
         release = Flux.interval(releaseInterval, releaseScheduler)
                 .onBackpressureDrop()
-                .subscribe(tick -> releaseReady(Instant.now()));
+                .subscribe(tick -> {
+                    // An exception escaping here would end the timer, and with it all
+                    // processing, while the process stays up. Log it and keep ticking.
+                    try {
+                        releaseReady(Instant.now());
+                    } catch (RuntimeException e) {
+                        log.error("Releasing GPS events failed; continuing with the next tick", e);
+                    }
+                });
 
         log.info("GPS event pipeline started");
     }

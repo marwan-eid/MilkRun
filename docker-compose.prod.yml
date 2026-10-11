@@ -76,7 +76,7 @@ services:
       - SPRING_FLYWAY_URL=jdbc:postgresql://postgres:5432/milkrun
       - MILKRUN_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SPRING_PROFILES_ACTIVE=prod
-    restart: on-failure
+    restart: unless-stopped
 
   # ==========================================
   #   Application: fleet simulator
@@ -93,7 +93,10 @@ services:
     environment:
       - KAFKA_BROKERS=kafka:9092
       - VAN_COUNT=${VAN_COUNT:-50}
-    restart: on-failure
+    # Not on-failure: the simulator exits cleanly on SIGTERM, so after a VM
+    # reboot on-failure would leave it stopped. It also exits by itself when its
+    # sends stop getting through, to be restarted with a fresh connection.
+    restart: unless-stopped
 
   # ==========================================
   #   Application: React build served by nginx (proxies /api)

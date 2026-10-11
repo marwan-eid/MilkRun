@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -90,7 +91,7 @@ class PipelineHealthMonitorTest {
     void aNearlyFullDiskIsDegradedWhileTrafficStillFlows() {
         double[] free = { 0.40 };
         monitor = new PipelineHealthMonitor(registry, clock, Duration.ofMinutes(5), Duration.ofSeconds(15), 0.20,
-                () -> free[0], 0.15);
+                () -> free[0], 0.15, List::of, 1);
         monitor.sample();
         traffic(Duration.ofMinutes(6), 1500, 100);
         assertEquals(PipelineHealthMonitor.Status.OK, monitor.report().status());
@@ -99,6 +100,42 @@ class PipelineHealthMonitorTest {
         PipelineHealthMonitor.Report r = monitor.report();
         assertEquals(PipelineHealthMonitor.Status.DEGRADED, r.status());
         assertEquals(List.of("disk is 94% full (limit 85%)"), r.problems());
+    }
+
+    @Test
+    void vansThatWentSilentAreDegradedWhileTheRestStillReport() {
+        // 50 vans; the 8 on a failed partition stopped reporting, the others carry on.
+        List<Instant> lastSeen = new ArrayList<>();
+        monitor = new PipelineHealthMonitor(registry, clock, Duration.ofMinutes(5), Duration.ofSeconds(15), 0.20,
+                () -> 1.0, 0, () -> lastSeen, 0.05);
+        monitor.sample();
+        traffic(Duration.ofMinutes(6), 1500, 100);
+        Instant stopped = clock.instant();
+        for (int van = 0; van < 50; van++) {
+            lastSeen.add(stopped);
+        }
+        assertEquals(PipelineHealthMonitor.Status.OK, monitor.report().status());
+
+        // Dead zones and route changes: a couple of vans quiet for a while is normal.
+        traffic(Duration.ofMinutes(4), 1500, 100);
+        for (int van = 8; van < 50; van++) {
+            lastSeen.set(van, clock.instant());
+        }
+        assertEquals(PipelineHealthMonitor.Status.OK, monitor.report().status(), "silent for 4 min only");
+
+        traffic(Duration.ofMinutes(2), 1500, 100);
+        for (int van = 8; van < 50; van++) {
+            lastSeen.set(van, clock.instant());
+        }
+        PipelineHealthMonitor.Report r = monitor.report();
+        assertEquals(PipelineHealthMonitor.Status.DEGRADED, r.status());
+        assertEquals(List.of("8 of 50 vans have not reported in the last 5 min"), r.problems());
+
+        // Two stragglers (4% of the fleet) stay under the limit
+        for (int van = 2; van < 8; van++) {
+            lastSeen.set(van, clock.instant());
+        }
+        assertEquals(PipelineHealthMonitor.Status.OK, monitor.report().status());
     }
 
     @Test

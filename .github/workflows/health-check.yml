@@ -15,15 +15,28 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     env:
       DEMO_URL: ${{ vars.DEMO_URL || 'https://marwan-milkrun.duckdns.org' }}
     steps:
       - name: Pipeline health over the last 5 minutes
         run: |
           fetch() { curl -fsS --max-time 20 --retry 3 --retry-delay 10 "$DEMO_URL/api/observability/health"; }
-          body="$(fetch)"
-          status="$(jq -r '.status // empty' <<<"$body")"
+
+          # A restart or a short stall shows as DEGRADED for a few minutes and
+          # clears by itself. Only a problem that is still there after three more
+          # looks, 90 s apart, is worth an alert.
+          for attempt in 1 2 3 4; do
+            body="$(fetch)"
+            status="$(jq -r '.status // empty' <<<"$body")"
+            if [ "$status" != "DEGRADED" ]; then
+              break
+            fi
+            echo "look $attempt: DEGRADED: $(jq -r '.window.problems | join("; ")' <<<"$body")"
+            if [ "$attempt" -lt 4 ]; then
+              sleep 90
+            fi
+          done
 
           if [ -n "$status" ]; then
             jq '{status, window}' <<<"$body"

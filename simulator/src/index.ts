@@ -93,8 +93,17 @@ async function main(): Promise<void> {
         console.log(
             `📊 [${new Date().toISOString().slice(11, 19)}] ` +
             `Active: ${active}/${VAN_COUNT} | GPS sent: ${stats.gpsSent} | ` +
-            `Deliveries: ${stats.deliverySent} | Plans: ${stats.plansSent} | Errors: ${stats.errors}`,
+            `Deliveries: ${stats.deliverySent} | Plans: ${stats.plansSent} | Errors: ${stats.errors}` +
+            (stats.gpsDropped > 0 ? ` | GPS dropped: ${stats.gpsDropped}` : ''),
         );
+
+        // A producer that only fails will not recover by itself; a fresh process does.
+        // Exit non-zero and let the container's restart policy start a new one.
+        const stalled = producer.stalled;
+        if (stalled.length > 0) {
+            console.error(`💥 Sends have not succeeded for a while (${stalled.join(', ')}); exiting so the simulator is restarted.`);
+            process.exit(1);
+        }
     }, STATS_INTERVAL_MS);
 
     const shutdown = async (signal: string) => {
