@@ -18,8 +18,27 @@ export const TOPICS = {
  * same topics; whichever process starts first creates them.
  */
 const REQUIRED_TOPICS: ITopicConfig[] = [
-    { topic: TOPICS.gps, numPartitions: 10 },
-    { topic: TOPICS.delivery, numPartitions: 10 },
+    {
+        topic: TOPICS.gps,
+        numPartitions: 10,
+        // A short replay buffer only (retention.bytes is per partition); the
+        // default 7 days of pings does not fit on the demo VM's disk.
+        configEntries: [
+            { name: 'retention.ms', value: '3600000' },
+            { name: 'retention.bytes', value: '104857600' },
+            { name: 'segment.bytes', value: '52428800' },
+            { name: 'segment.ms', value: '600000' },
+        ],
+    },
+    {
+        topic: TOPICS.delivery,
+        numPartitions: 10,
+        configEntries: [
+            { name: 'retention.ms', value: '86400000' },
+            { name: 'retention.bytes', value: '52428800' },
+            { name: 'segment.bytes', value: '26214400' },
+        ],
+    },
     {
         topic: TOPICS.routePlans,
         numPartitions: 10,

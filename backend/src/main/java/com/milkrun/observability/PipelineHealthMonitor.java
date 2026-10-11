@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 
+import java.io.File;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,6 +23,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.DoubleSupplier;
 
 /**
  * Rolling view of the GPS pipeline over the last few minutes.
@@ -47,6 +49,8 @@ public class PipelineHealthMonitor {
     private final Duration window;
     private final Duration sampleInterval;
     private final double maxRejectionRate;
+    private final DoubleSupplier diskFree;
+    private final double minDiskFree;
     private final Deque<Sample> samples = new ArrayDeque<>();
     private Disposable sampler;
 
@@ -55,17 +59,36 @@ public class PipelineHealthMonitor {
             MeterRegistry registry,
             @Value("${milkrun.health.window:5m}") Duration window,
             @Value("${milkrun.health.sample-interval:15s}") Duration sampleInterval,
-            @Value("${milkrun.health.max-dedup-rejection-rate:0.20}") double maxRejectionRate) {
-        this(registry, Clock.systemUTC(), window, sampleInterval, maxRejectionRate);
+            @Value("${milkrun.health.max-dedup-rejection-rate:0.20}") double maxRejectionRate,
+            @Value("${milkrun.health.min-disk-free:0.15}") double minDiskFree) {
+        this(registry, Clock.systemUTC(), window, sampleInterval, maxRejectionRate,
+                PipelineHealthMonitor::diskFreeFraction, minDiskFree);
     }
 
     PipelineHealthMonitor(MeterRegistry registry, Clock clock, Duration window,
             Duration sampleInterval, double maxRejectionRate) {
+        this(registry, clock, window, sampleInterval, maxRejectionRate, () -> 1.0, 0);
+    }
+
+    PipelineHealthMonitor(MeterRegistry registry, Clock clock, Duration window,
+            Duration sampleInterval, double maxRejectionRate, DoubleSupplier diskFree, double minDiskFree) {
         this.registry = registry;
         this.clock = clock;
         this.window = window;
         this.sampleInterval = sampleInterval;
         this.maxRejectionRate = maxRejectionRate;
+        this.diskFree = diskFree;
+        this.minDiskFree = minDiskFree;
+    }
+
+    /**
+     * Free share of the disk the container's filesystem lives on, which on a
+     * single-VM deployment is the disk Kafka and PostgreSQL write to as well.
+     */
+    private static double diskFreeFraction() {
+        File root = new File("/");
+        long total = root.getTotalSpace();
+        return total > 0 ? (double) root.getUsableSpace() / total : 1.0;
     }
 
     @PostConstruct
@@ -121,6 +144,10 @@ public class PipelineHealthMonitor {
         }
         if (received == 0 && fullWindow) {
             problems.add("no GPS events received in the last " + window.toMinutes() + " min");
+        }
+        double free = diskFree.getAsDouble();
+        if (free < minDiskFree) {
+            problems.add(String.format("disk is %.0f%% full (limit %.0f%%)", (1 - free) * 100, (1 - minDiskFree) * 100));
         }
 
         Status status = !problems.isEmpty() ? Status.DEGRADED : fullWindow ? Status.OK : Status.WARMING_UP;

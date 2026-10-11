@@ -56,6 +56,11 @@ start "$SHA"
 if healthy; then
     echo "$SHA" > .deployed-tag
     docker image prune -f > /dev/null
+    # Keep this release and the one before it (for rollback); every older
+    # release's images would otherwise pile up on the disk.
+    docker images --format '{{.Repository}}:{{.Tag}}' \
+        | grep '/milkrun-' | grep -v -e ":$SHA\$" -e ":$PREVIOUS_TAG\$" \
+        | xargs -r docker rmi > /dev/null 2>&1 || true
     echo "==> Deployed $SHA"
 else
     echo "!! Backend did not become healthy; rolling back to $PREVIOUS_TAG" >&2

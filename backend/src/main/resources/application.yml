@@ -4,6 +4,9 @@ spring:
 
   kafka:
     bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    admin:
+      # Apply the retention limits in KafkaTopicsConfig to topics that already exist.
+      modify-topic-configs: true
     producer:
       bootstrap-servers: ${MILKRUN_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 

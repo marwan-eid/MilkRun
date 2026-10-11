@@ -30,6 +30,12 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+      # Safety net for any topic without its own limits: at most a day and
+      # 256 MB per partition. Kafka's defaults (7 days, unlimited size) filled
+      # the VM's disk. The busy topics set tighter limits of their own.
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_RETENTION_BYTES: 268435456
+      KAFKA_LOG_SEGMENT_BYTES: 67108864
     restart: always
 
   # ==========================================

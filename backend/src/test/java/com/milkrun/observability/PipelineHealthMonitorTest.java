@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -83,6 +84,21 @@ class PipelineHealthMonitorTest {
         assertEquals(6.7, r.rejectionRatePct(), 0.05);
         assertEquals(300, r.windowSeconds());
         assertEquals(93.3, r.processedPerSecond(), 0.05);
+    }
+
+    @Test
+    void aNearlyFullDiskIsDegradedWhileTrafficStillFlows() {
+        double[] free = { 0.40 };
+        monitor = new PipelineHealthMonitor(registry, clock, Duration.ofMinutes(5), Duration.ofSeconds(15), 0.20,
+                () -> free[0], 0.15);
+        monitor.sample();
+        traffic(Duration.ofMinutes(6), 1500, 100);
+        assertEquals(PipelineHealthMonitor.Status.OK, monitor.report().status());
+
+        free[0] = 0.06;
+        PipelineHealthMonitor.Report r = monitor.report();
+        assertEquals(PipelineHealthMonitor.Status.DEGRADED, r.status());
+        assertEquals(List.of("disk is 94% full (limit 85%)"), r.problems());
     }
 
     @Test
