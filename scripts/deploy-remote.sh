@@ -37,13 +37,21 @@ start() {
 
 healthy() {
     # The backend publishes no host port; ask it from inside its container.
-    # Up to 6 minutes: schema migrations on a small VM can take a while.
-    for _ in $(seq 1 90); do
+    # Up to 10 minutes: on a small VM the JVM takes several to start, and
+    # schema migrations can add more. A dot per look shows progress and keeps
+    # the SSH session from going silent.
+    local started=$SECONDS
+    local deadline=$((SECONDS + 600))
+    printf '==> Waiting for the backend '
+    while [ "$SECONDS" -lt "$deadline" ]; do
         if $COMPOSE exec -T backend wget -qO- http://localhost:8080/api/observability/live 2>/dev/null | grep -q UP; then
+            echo " up after $((SECONDS - started))s"
             return 0
         fi
+        printf '.'
         sleep 4
     done
+    echo
     return 1
 }
 
@@ -55,7 +63,8 @@ start "$SHA"
 
 if healthy; then
     echo "$SHA" > .deployed-tag
-    docker image prune -f > /dev/null
+    # Cleaning up is best effort: it must not turn a good rollout into a failed one.
+    docker image prune -f > /dev/null 2>&1 || true
     # Keep this release and the one before it (for rollback); every older
     # release's images would otherwise pile up on the disk.
     docker images --format '{{.Repository}}:{{.Tag}}' \

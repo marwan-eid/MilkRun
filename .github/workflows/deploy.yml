@@ -106,7 +106,10 @@ jobs:
           else
             ssh-keyscan -H "$DEPLOY_HOST" > ~/.ssh/known_hosts
           fi
-          SSH="ssh -i $HOME/.ssh/deploy_key -o BatchMode=yes $DEPLOY_USER@$DEPLOY_HOST"
+          # Keepalives: the rollout waits minutes for the backend without printing
+          # much, and the runner's network drops connections that stay silent. The
+          # job then failed although the rollout went on and succeeded on the VM.
+          SSH="ssh -i $HOME/.ssh/deploy_key -o BatchMode=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=10 $DEPLOY_USER@$DEPLOY_HOST"
 
           # Short-lived token: lets the VM pull private GHCR images for this rollout.
           printf '%s' "$GHCR_TOKEN" | $SSH "docker login ghcr.io -u '$GH_ACTOR' --password-stdin"
