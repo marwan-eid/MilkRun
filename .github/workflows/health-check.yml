@@ -23,20 +23,30 @@ jobs:
         run: |
           fetch() { curl -fsS --max-time 20 --retry 3 --retry-delay 10 "$DEMO_URL/api/observability/health"; }
 
-          # A restart or a short stall shows as DEGRADED for a few minutes and
-          # clears by itself. Only a problem that is still there after three more
-          # looks, 90 s apart, is worth an alert.
+          # A restart (a deploy, say) or a short stall shows as DEGRADED, or the
+          # endpoint briefly not answering, for a few minutes and clears by
+          # itself. Only a problem still there after three more looks, 90 s
+          # apart, is worth an alert.
           for attempt in 1 2 3 4; do
-            body="$(fetch)"
-            status="$(jq -r '.status // empty' <<<"$body")"
-            if [ "$status" != "DEGRADED" ]; then
-              break
+            if body="$(fetch)"; then
+              status="$(jq -r '.status // empty' <<<"$body")"
+              if [ "$status" != "DEGRADED" ]; then
+                break
+              fi
+              echo "look $attempt: DEGRADED: $(jq -r '.window.problems | join("; ")' <<<"$body")"
+            else
+              status="UNREACHABLE"
+              echo "look $attempt: the health endpoint did not answer"
             fi
-            echo "look $attempt: DEGRADED: $(jq -r '.window.problems | join("; ")' <<<"$body")"
             if [ "$attempt" -lt 4 ]; then
               sleep 90
             fi
           done
+
+          if [ "$status" = "UNREACHABLE" ]; then
+            echo "::error::The demo's health endpoint has not answered for about 5 minutes"
+            exit 1
+          fi
 
           if [ -n "$status" ]; then
             jq '{status, window}' <<<"$body"
