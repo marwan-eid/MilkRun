@@ -116,6 +116,14 @@ track of its sequence numbers when the broker stalls past the request timeout
 and then rejects every later send, and the pipeline deduplicates and reorders
 anyway.
 
+**Fleet supervisor** (`fleet-supervisor.ts`). Every van slot always has a
+van on the road. Every 1.5 s the supervisor starts a van in the next empty
+slot (at startup, after a route is finished, after a failed start); a start
+that has not put its van on the road within 60 s is abandoned and tried
+again, and the abandoned one can no longer claim the slot. OSRM requests
+answer with straight lines after 15 s at the latest, whatever the request is
+doing.
+
 **Watchdog** (`send-watchdog.ts`). If GPS, delivery or route-plan sends have
 all failed, or one has been hanging, for two minutes, the simulator exits
 with a non-zero code and the container's restart policy starts a fresh one.

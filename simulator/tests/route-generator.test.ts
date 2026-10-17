@@ -151,6 +151,15 @@ describe('routers', () => {
         expect((await router.route(points)).source).toBe('straight-line');
     });
 
+    it('OSRM router answers by its deadline even if the request never settles', async () => {
+        const never = () => new Promise<never>(() => { });
+        const hangingFetch = new OsrmRouter('http://osrm.test', never, 10, 50);
+        expect((await hangingFetch.route(points)).source).toBe('straight-line');
+
+        const hangingBody = new OsrmRouter('http://osrm.test', async () => ({ ok: true, status: 200, json: never }), 10, 50);
+        expect((await hangingBody.route(points)).source).toBe('straight-line');
+    });
+
     it('leg ends never go backwards even if distances are inconsistent', () => {
         const line = densify(points[0], points[2], 30);
         const ends = matchLegEnds(line, [5000, 1, 1, 5000]);

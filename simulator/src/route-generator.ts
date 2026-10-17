@@ -81,9 +81,31 @@ export class OsrmRouter implements Router {
         private readonly baseUrl: string = process.env.OSRM_URL || 'https://router.project-osrm.org',
         private readonly fetchImpl: FetchFn = fetch,
         private readonly timeoutMs = 10_000,
+        /** Answer with straight lines after this long, whatever the request is doing. */
+        private readonly deadlineMs = timeoutMs + 5_000,
     ) { }
 
+    /**
+     * Always settles within `deadlineMs`. The abort signal alone did not
+     * guarantee that: in production a few requests never settled, and the van
+     * waiting for its route never drove again.
+     */
     async route(points: Waypoint[]): Promise<RoutedPath> {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const deadline = new Promise<RoutedPath>((resolve) => {
+            timer = setTimeout(() => {
+                console.warn(`OSRM did not answer within ${this.deadlineMs / 1000} s; using straight-line geometry.`);
+                resolve(straightLinePath(points));
+            }, this.deadlineMs);
+        });
+        try {
+            return await Promise.race([this.request(points), deadline]);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    private async request(points: Waypoint[]): Promise<RoutedPath> {
         const coords = points.map((p) => `${p.longitude.toFixed(6)},${p.latitude.toFixed(6)}`).join(';');
         const url = `${this.baseUrl}/route/v1/driving/${coords}?overview=full&geometries=geojson`;
         try {

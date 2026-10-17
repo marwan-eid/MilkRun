@@ -2,6 +2,7 @@ import { KafkaEventProducer } from './kafka-producer.js';
 import { generateRoute, OsrmRouter, StraightLineRouter, type Router } from './route-generator.js';
 import { VanSimulator } from './van-simulator.js';
 import { DispatchConsumer } from './dispatch-consumer.js';
+import { FleetSupervisor } from './fleet-supervisor.js';
 
 /**
  * The Milk-Run Fleet Simulator
@@ -27,6 +28,8 @@ const TIME_SCALE = parseFloat(process.env.TIME_SCALE || '4');
 const BASE_SPEED_KMH = parseFloat(process.env.BASE_SPEED_KMH || '25');
 // Pause between route requests: the public OSRM server allows about one per second.
 const ROUTE_STAGGER_MS = parseInt(process.env.ROUTE_STAGGER_MS || '1500', 10);
+// A van whose route has not started by then is given up on and started again.
+const VAN_START_DEADLINE_MS = parseInt(process.env.VAN_START_DEADLINE_MS || '60000', 10);
 
 const router: Router = process.env.ROUTER === 'straight' ? new StraightLineRouter() : new OsrmRouter();
 
@@ -51,41 +54,47 @@ async function main(): Promise<void> {
     const dispatchConsumer = new DispatchConsumer(KAFKA_BROKERS, simulators);
     await dispatchConsumer.connect();
 
-    // Deploy a van; when it finishes its route, deploy a fresh route for the same van.
-    const deployVan = async (vanIndex: number) => {
+    const remove = (sim: VanSimulator) => {
+        const idx = simulators.indexOf(sim);
+        if (idx > -1) simulators.splice(idx, 1);
+    };
+
+    // Puts a van on the road in a slot. Only the supervisor calls this, for
+    // empty slots: at startup, after a route is finished, and again whenever
+    // an earlier attempt failed or is taking too long.
+    const startVan = async (vanIndex: number, claim: () => boolean) => {
         const stops = STOPS_PER_VAN - 4 + Math.floor(Math.random() * 9);
         const route = await generateRoute(vanIndex, stops, {
             router, timeScale: TIME_SCALE, baseSpeedKmh: BASE_SPEED_KMH,
         });
+        if (!claim()) return; // abandoned meanwhile; another attempt owns the slot
 
-        const sim = new VanSimulator(route, producer, {
+        const sim: VanSimulator = new VanSimulator(route, producer, {
             pingIntervalMs: PING_INTERVAL_MS,
             chaosEnabled: CHAOS_ENABLED,
             timeScale: TIME_SCALE,
             baseSpeedKmh: BASE_SPEED_KMH,
             router,
             onRouteCompleted: (vanId) => {
-                const idx = simulators.findIndex((s) => s.vanId === vanId);
-                if (idx > -1) simulators.splice(idx, 1);
+                remove(sim);
+                supervisor.vacate(vanIndex);
                 console.log(`♻️  ${vanId} back at the hub, starting a new route`);
-                setTimeout(() => void deployVan(vanIndex).catch((e) => console.error(`Redeploying ${vanId} failed`, e)), 1000);
             },
         });
-
         simulators.push(sim);
-        await sim.start();
+        try {
+            await sim.start();
+        } catch (e) {
+            remove(sim);
+            supervisor.vacate(vanIndex);
+            throw e;
+        }
     };
 
-    console.log(`\n🗺️  Generating ${VAN_COUNT} routes across Amsterdam (vans restart on completion)...`);
-    for (let i = 0; i < VAN_COUNT; i++) {
-        await deployVan(i);
-        if (i % 5 === 0) {
-            console.log(`   ... ${i + 1}/${VAN_COUNT} vans on the road`);
-        }
-        if (i < VAN_COUNT - 1) {
-            await new Promise((r) => setTimeout(r, ROUTE_STAGGER_MS));
-        }
-    }
+    const supervisor = new FleetSupervisor(VAN_COUNT, startVan, VAN_START_DEADLINE_MS);
+    console.log(`\n🗺️  Putting ${VAN_COUNT} vans on the road across Amsterdam, one every ${ROUTE_STAGGER_MS} ms (vans restart on completion)...`);
+    supervisor.tick();
+    const supervisorInterval = setInterval(() => supervisor.tick(), ROUTE_STAGGER_MS);
 
     const statsInterval = setInterval(() => {
         const stats = producer.stats;
@@ -109,6 +118,7 @@ async function main(): Promise<void> {
     const shutdown = async (signal: string) => {
         console.log(`\n⏹️  Received ${signal}, shutting down...`);
         clearInterval(statsInterval);
+        clearInterval(supervisorInterval);
         await Promise.all(simulators.map((s) => s.stop()));
         await dispatchConsumer.disconnect();
         await producer.disconnect();
