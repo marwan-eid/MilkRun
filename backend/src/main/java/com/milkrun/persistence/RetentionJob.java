@@ -84,7 +84,7 @@ public class RetentionJob {
             @Value("${milkrun.retention.interval:10m}") Duration interval,
             @Value("${milkrun.retention.batch-size:5000}") int batchSize,
             @Value("${milkrun.retention.max-batches:20}") int maxBatches,
-            @Value("${milkrun.retention.gps-archive:24h}") Duration gpsArchive,
+            @Value("${milkrun.retention.gps-archive:6h}") Duration gpsArchive,
             @Value("${milkrun.retention.dead-letters:2d}") Duration deadLetters,
             @Value("${milkrun.retention.history:7d}") Duration history) {
         this.db = db;
@@ -102,7 +102,9 @@ public class RetentionJob {
 
     @EventListener(ApplicationReadyEvent.class)
     public void start() {
-        runner = Flux.interval(Duration.ofMinutes(1), interval)
+        // The first run waits until the backend has warmed up: on the demo VM a
+        // deploy's restart already keeps the disk and CPU busy for minutes.
+        runner = Flux.interval(Duration.ofMinutes(5), interval)
                 // A run slower than the interval is not stacked up behind itself.
                 .onBackpressureDrop()
                 .concatMap(tick -> runOnce()

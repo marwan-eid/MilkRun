@@ -59,7 +59,10 @@ milkrun:
   # grows by about 0.5 GB a day and filled the demo VM's disk.
   retention:
     interval: 10m
-    gps-archive: 24h
+    # Only read when a route completes (routes take under an hour). Short, so
+    # its indexes stay small enough to be cached: on the demo VM's slow disk,
+    # inserts into a 2.7 GB random-UUID index kept the disk saturated.
+    gps-archive: 6h
     dead-letters: 2d
     # SLA breaches, delivery logs and routes: what the analytics cover
     history: 7d
