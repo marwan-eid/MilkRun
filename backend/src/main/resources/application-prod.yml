@@ -8,9 +8,14 @@ logging:
 
 milkrun:
   analytics:
-    # The demo VM is small and shared; give queries time and serve cached results longer
+    # The demo VM is small and shared: a query can take tens of seconds and the
+    # JVM sometimes stalls for a minute, so visitors are served the last result
+    # (up to max-stale old, refreshed meanwhile) instead of waiting for a query,
+    # and the dashboard's queries are refreshed on a schedule.
     timeout: 30s
+    cache-ttl: 60s
+    max-stale: 15m
+    refresh-interval: 5m
     # A query outlives its caller's timeout so its result can be cached for the
     # next viewer; PostgreSQL cancels it after this
     statement-timeout: 2m
-    cache-ttl: 60s

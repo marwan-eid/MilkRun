@@ -216,9 +216,20 @@ SSE, `/api/vans`, dispatch, health and the Calcite live table read a
 
 One Calcite connection with two schemas: `milkrun` (PostgreSQL via the JDBC
 adapter over a small Hikari pool; joins, filters and aggregates are pushed
-down) and `live` (`LiveVanTable`, the fleet view). Queries run on a dedicated
-thread with a 10 s timeout and a 10 s result cache. The federated endpoints
-(`at-risk-vans`, `live-zone-risk`) join live vans with breach history.
+down) and `live` (`LiveVanTable`, the fleet view). Queries run one at a time
+on a dedicated thread. The federated endpoints (`at-risk-vans`,
+`live-zone-risk`) join live vans with breach history.
+
+Callers are answered from the last result when it is recent enough, because
+on the 1 GB demo VM a query can take tens of seconds and the JVM sometimes
+stalls for a minute (`AnalyticsService`): a result younger than the cache TTL
+(10 s; 60 s in prod) is served as is, an older one up to `max-stale` (15 min
+in prod) is served while a refresh runs, and only otherwise does the caller
+wait (10 s; 30 s in prod). Callers of the same query share one run, a run
+outlives a caller that stopped waiting so its result is still cached, and
+PostgreSQL's `statement_timeout` (2 min) ends runaway ones. In prod the
+dashboard's four queries are also refreshed every 5 minutes. Responses carry
+the result's time in `X-Analytics-As-Of`, which the dashboard shows.
 
 ### 4.7 Public API protection
 
@@ -245,14 +256,19 @@ CORS allows the configured origins only (`milkrun.cors.allowed-origins`).
 Flyway runs at startup. Baseline version 0 plus an idempotent V1 let databases
 created by the old `init.sql` upgrade in place.
 
-| Table | Written by |
-|---|---|
-| `geofence_zones` | V1 seed (4 zones) |
-| `completed_routes` | `RoutePlanStore` (planned side), `DeliveryEventPipeline` (actual side) |
-| `delivery_logs` | `DeliveryEventPipeline`, unique `event_id` |
-| `sla_breaches` | `DeliveryEventPipeline`, unique `event_id` |
-| `gps_archive` | GPS pipeline (one point per van per 2 s) and late-event reconciliation, unique `event_id` |
-| `dead_letter_log` | late GPS events, failed or malformed delivery records |
+| Table | Written by | Kept |
+|---|---|---|
+| `geofence_zones` | V1 seed (4 zones) | |
+| `completed_routes` | `RoutePlanStore` (planned side), `DeliveryEventPipeline` (actual side) | 7 days |
+| `delivery_logs` | `DeliveryEventPipeline`, unique `event_id` | 7 days |
+| `sla_breaches` | `DeliveryEventPipeline`, unique `event_id` | 7 days |
+| `gps_archive` | GPS pipeline (one point per van per 2 s) and late-event reconciliation, unique `event_id` | 6 hours |
+| `dead_letter_log` | late GPS events, failed or malformed delivery records | 2 days |
+
+`RetentionJob` deletes rows past those ages every 10 minutes, oldest first
+in batches (`milkrun.retention.*`). Without it the demo's database grew by
+about 0.5 GB a day and filled the VM's disk; V5 and V6 emptied or rebuilt the
+tables that had grown by then.
 
 ## 6. Frontend
 

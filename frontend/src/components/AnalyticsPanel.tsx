@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { formatSlack } from '../lib/format';
+import { formatClock, formatSlack } from '../lib/format';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
 
@@ -38,14 +38,18 @@ interface ZoneRisk {
     zone_avg_breach_seconds: number | null;
 }
 
-/** Rows of a query, or the reason it failed. */
-type Result<T> = { rows: T[] } | { error: string };
+/**
+ * Rows of a query and when the backend computed them (results can be a few
+ * minutes old: the backend serves its last result rather than make visitors
+ * wait), or the reason it failed.
+ */
+type Result<T> = { rows: T[]; asOf: string | null } | { error: string };
 
 async function load<T>(path: string): Promise<Result<T>> {
     try {
         const res = await fetch(`${API_BASE}/api/analytics/${path}`);
         if (!res.ok) return { error: `query failed (HTTP ${res.status})` };
-        return { rows: await res.json() };
+        return { rows: await res.json(), asOf: res.headers.get('X-Analytics-As-Of') };
     } catch {
         return { error: 'backend unreachable' };
     }
@@ -164,10 +168,14 @@ interface CardProps<T> {
 }
 
 function Card<T>({ title, desc, result, empty, head, row }: CardProps<T>) {
+    const asOf = 'asOf' in result && result.asOf ? formatClock(result.asOf) : null;
     return (
         <div className="analytics-card">
             <h3>{title}</h3>
-            <p className="card-desc">{desc}</p>
+            <p className="card-desc">
+                {desc}
+                {asOf && <span className="as-of"> · as of {asOf}</span>}
+            </p>
             {'error' in result ? (
                 <p className="no-data">Unavailable: {result.error}</p>
             ) : result.rows.length === 0 ? (

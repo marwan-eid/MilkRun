@@ -13,6 +13,13 @@ export function formatEta(seconds: number): string {
     return duration(seconds);
 }
 
+/** Local wall-clock time of an ISO-8601 instant, "14:05"; null when it is not a valid time. */
+export function formatClock(iso: string): string | null {
+    const t = new Date(iso);
+    if (Number.isNaN(t.getTime())) return null;
+    return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+}
+
 /** Slack against the delivery slot: "+2m 10s", "45s late", or "—". */
 export function formatSlack(seconds: number | null | undefined): string {
     if (seconds === null || seconds === undefined) return '—';

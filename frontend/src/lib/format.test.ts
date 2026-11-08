@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatEta, formatSlack } from './format';
+import { formatClock, formatEta, formatSlack } from './format';
 
 describe('formatEta', () => {
     it('shows a dash when unknown and "At stop" while delivering', () => {
@@ -11,6 +11,17 @@ describe('formatEta', () => {
         expect(formatEta(9)).toBe('9s');
         expect(formatEta(65)).toBe('1m 05s');
         expect(formatEta(600)).toBe('10m 00s');
+    });
+});
+
+describe('formatClock', () => {
+    it('shows the local hour and minute', () => {
+        expect(formatClock(new Date(2026, 10, 8, 14, 5, 30).toISOString())).toBe('14:05');
+        expect(formatClock(new Date(2026, 10, 8, 9, 0).toISOString())).toBe('09:00');
+    });
+
+    it('returns null for something that is not a time', () => {
+        expect(formatClock('soon')).toBeNull();
     });
 });
 

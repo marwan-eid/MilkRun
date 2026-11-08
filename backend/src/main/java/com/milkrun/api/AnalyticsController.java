@@ -16,13 +16,17 @@ import java.util.Map;
  *
  * Historical endpoints query PostgreSQL through Calcite; the live endpoints
  * join the in-memory fleet state with PostgreSQL in one SQL statement. A
- * failed query returns 503 with an error message instead of an empty list.
+ * result can be up to a few minutes old (see {@link AnalyticsService}); the
+ * X-Analytics-As-Of header says when it was computed. A failed query returns
+ * 503 with an error message instead of an empty list.
  */
 @RestController
 @RequestMapping("/api/analytics")
 public class AnalyticsController {
 
     private static final Logger log = LoggerFactory.getLogger(AnalyticsController.class);
+
+    static final String AS_OF_HEADER = "X-Analytics-As-Of";
 
     private final AnalyticsService analyticsService;
 
@@ -81,9 +85,10 @@ public class AnalyticsController {
                 "sources", List.of("milkrun: PostgreSQL (JDBC adapter)", "live: in-memory fleet state"));
     }
 
-    private Mono<ResponseEntity<Object>> respond(String name, Mono<List<Map<String, Object>>> rows) {
+    /** The rows as the body; when they were computed in the X-Analytics-As-Of header (ISO-8601). */
+    private Mono<ResponseEntity<Object>> respond(String name, Mono<AnalyticsService.Rows> rows) {
         return rows
-                .map(r -> ResponseEntity.ok().<Object>body(r))
+                .map(r -> ResponseEntity.ok().header(AS_OF_HEADER, r.asOf().toString()).<Object>body(r.rows()))
                 .onErrorResume(e -> {
                     log.warn("Analytics query {} failed: {}", name, e.toString());
                     return Mono.just(ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)

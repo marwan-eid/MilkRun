@@ -88,7 +88,7 @@ class RetentionJobTest {
 
     private static RetentionJob job(int batchSize, int maxBatches) {
         return new RetentionJob(db, new SimpleMeterRegistry(), Duration.ofMinutes(10), batchSize, maxBatches,
-                Duration.ofHours(24), Duration.ofDays(2), Duration.ofDays(7));
+                Duration.ofMillis(10), Duration.ofHours(24), Duration.ofDays(2), Duration.ofDays(7));
     }
 
     @Test

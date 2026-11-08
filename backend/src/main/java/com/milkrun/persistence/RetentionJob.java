@@ -24,10 +24,15 @@ import java.util.function.Supplier;
  * archive alone grew by about 0.5 GB a day and filled the demo VM's disk, and
  * the analytics queries, which aggregate whole tables, slowed past their timeout.
  *
- * Rows are deleted oldest first in small batches, a bounded number per run, so
- * a backlog is worked off over several runs instead of in one long transaction
- * that would stall the live pipeline's writes. Deleted space is reused by
- * PostgreSQL for new rows, so the files stop growing.
+ * Rows are deleted oldest first in small batches, a bounded number per run
+ * with a pause between batches, so the live pipeline keeps its share of the
+ * disk. Deleted space is reused by PostgreSQL for new rows, so the files stop
+ * growing.
+ *
+ * Each delete names its rows by physical address (ctid) or by an indexed key
+ * list. The obvious {@code WHERE id IN (SELECT ...)} was planned as a hash
+ * join over a sequential scan of the whole table, once per batch: on the demo
+ * VM each 5000-row batch read all of sla_breaches and took 47 s.
  */
 @Component
 @ConditionalOnProperty(name = "milkrun.retention.enabled", havingValue = "true", matchIfMissing = true)
@@ -44,29 +49,31 @@ public class RetentionJob {
      */
     private static final String OLDEST_BY_ID = """
             DELETE FROM %1$s
-            WHERE id IN (SELECT id FROM %1$s ORDER BY id LIMIT :batch)
+            WHERE ctid = ANY(ARRAY(SELECT ctid FROM %1$s ORDER BY id LIMIT :batch))
               AND created_at < :cutoff
             """;
 
     private static final String SLA_BREACHES = """
             DELETE FROM sla_breaches
-            WHERE id IN (SELECT id FROM sla_breaches WHERE detected_at < :cutoff LIMIT :batch)
+            WHERE ctid = ANY(ARRAY(SELECT ctid FROM sla_breaches
+                                   WHERE detected_at < :cutoff
+                                   ORDER BY detected_at LIMIT :batch))
             """;
 
     /* delivery_logs references completed_routes: a route's deliveries go first. */
     private static final String ROUTE_DELIVERIES = """
             DELETE FROM delivery_logs
-            WHERE route_id IN (SELECT route_id FROM completed_routes
-                               WHERE created_at < :cutoff
-                               ORDER BY created_at LIMIT :batch)
+            WHERE route_id = ANY(ARRAY(SELECT route_id FROM completed_routes
+                                       WHERE created_at < :cutoff
+                                       ORDER BY created_at LIMIT :batch))
             """;
 
     private static final String ROUTES = """
             DELETE FROM completed_routes
-            WHERE route_id IN (SELECT r.route_id FROM completed_routes r
-                               WHERE r.created_at < :cutoff
-                                 AND NOT EXISTS (SELECT 1 FROM delivery_logs d WHERE d.route_id = r.route_id)
-                               LIMIT :batch)
+            WHERE ctid = ANY(ARRAY(SELECT r.ctid FROM completed_routes r
+                                   WHERE r.created_at < :cutoff
+                                     AND NOT EXISTS (SELECT 1 FROM delivery_logs d WHERE d.route_id = r.route_id)
+                                   ORDER BY r.created_at LIMIT :batch))
             """;
 
     private final DatabaseClient db;
@@ -74,6 +81,7 @@ public class RetentionJob {
     private final int batchSize;
     private final int routeBatchSize;
     private final int maxBatches;
+    private final Duration pause;
     private final Duration gpsArchive;
     private final Duration deadLetters;
     private final Duration history;
@@ -84,6 +92,7 @@ public class RetentionJob {
             @Value("${milkrun.retention.interval:10m}") Duration interval,
             @Value("${milkrun.retention.batch-size:5000}") int batchSize,
             @Value("${milkrun.retention.max-batches:20}") int maxBatches,
+            @Value("${milkrun.retention.pause:1s}") Duration pause,
             @Value("${milkrun.retention.gps-archive:6h}") Duration gpsArchive,
             @Value("${milkrun.retention.dead-letters:2d}") Duration deadLetters,
             @Value("${milkrun.retention.history:7d}") Duration history) {
@@ -93,6 +102,7 @@ public class RetentionJob {
         // A route has a few dozen delivery rows, so take fewer routes per batch.
         this.routeBatchSize = Math.max(1, batchSize / 50);
         this.maxBatches = maxBatches;
+        this.pause = pause;
         this.gpsArchive = gpsArchive;
         this.deadLetters = deadLetters;
         this.history = history;
@@ -136,10 +146,10 @@ public class RetentionJob {
                 .reduce(0L, Long::sum);
     }
 
-    /** Repeats a batch while it comes back full, up to max-batches. */
+    /** Repeats a batch, after a pause, while it comes back full, up to max-batches. */
     private Mono<Long> drain(String table, Supplier<Mono<Long>> batch, int fullBatch) {
         return Mono.defer(batch)
-                .expand(n -> n >= fullBatch ? batch.get() : Mono.empty())
+                .expand(n -> n >= fullBatch ? Mono.delay(pause).then(batch.get()) : Mono.empty())
                 .take(maxBatches)
                 .reduce(0L, Long::sum)
                 .doOnNext(total -> {

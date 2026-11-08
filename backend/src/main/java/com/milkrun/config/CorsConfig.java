@@ -29,6 +29,8 @@ public class CorsConfig implements WebFluxConfigurer {
                 .allowedOrigins(allowedOrigins.toArray(String[]::new))
                 .allowedMethods("GET", "POST")
                 .allowedHeaders("Content-Type")
+                // When an analytics result was computed (AnalyticsController)
+                .exposedHeaders("X-Analytics-As-Of")
                 .maxAge(3600);
     }
 }

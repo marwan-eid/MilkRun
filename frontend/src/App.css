@@ -547,6 +547,10 @@ body {
   margin-bottom: 12px;
 }
 
+.card-desc .as-of {
+  white-space: nowrap;
+}
+
 .analytics-table {
   width: 100%;
   border-collapse: collapse;

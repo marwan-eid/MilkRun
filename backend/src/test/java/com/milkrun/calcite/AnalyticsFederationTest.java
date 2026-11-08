@@ -98,8 +98,8 @@ class AnalyticsFederationTest {
                 Instant.now(), Instant.now(), slack, EtaMethod.ROUTE);
     }
 
-    private static List<Map<String, Object>> run(Mono<List<Map<String, Object>>> query) {
-        return query.block(Duration.ofSeconds(60));
+    private static List<Map<String, Object>> run(Mono<AnalyticsService.Rows> query) {
+        return query.block(Duration.ofSeconds(60)).rows();
     }
 
     private static double num(Object o) {

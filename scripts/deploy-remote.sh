@@ -37,11 +37,11 @@ start() {
 
 healthy() {
     # The backend publishes no host port; ask it from inside its container.
-    # Up to 10 minutes: on a small VM the JVM takes several to start, and
-    # schema migrations can add more. A dot per look shows progress and keeps
+    # Up to 15 minutes: on the demo VM the JVM alone takes about 7 to start,
+    # and schema migrations add more. A dot per look shows progress and keeps
     # the SSH session from going silent.
     local started=$SECONDS
-    local deadline=$((SECONDS + 600))
+    local deadline=$((SECONDS + 900))
     printf '==> Waiting for the backend '
     while [ "$SECONDS" -lt "$deadline" ]; do
         if $COMPOSE exec -T backend wget -qO- http://localhost:8080/api/observability/live 2>/dev/null | grep -q UP; then
