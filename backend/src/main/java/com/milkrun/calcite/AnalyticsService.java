@@ -33,6 +33,7 @@ public class AnalyticsService {
     private final Duration timeout;
     private final Scheduler scheduler = Schedulers.newSingle("calcite");
     private final Map<String, Cached> cache = new ConcurrentHashMap<>();
+    private final Map<String, Mono<List<Map<String, Object>>>> inFlight = new ConcurrentHashMap<>();
 
     private record Cached(long at, List<Map<String, Object>> rows) {
     }
@@ -198,16 +199,33 @@ public class AnalyticsService {
 
     // ═══════════════════ Execution ═══════════════════
 
+    /**
+     * Serves a fresh cached result, or joins the run of this query that is
+     * already queued or running, or starts one.
+     *
+     * A caller that gives up after the timeout does not cancel the run: its
+     * result is still cached for the next caller. Before, a query slower than
+     * the timeout was discarded every time, so on a slow VM the cache never
+     * filled, and every dashboard open queued four more queries on the single
+     * Calcite thread behind the abandoned ones. Runs are bounded instead by
+     * PostgreSQL's statement timeout (see {@link CalciteSchemaFactory}).
+     */
     private Mono<List<Map<String, Object>>> query(String key, String sql) {
         return Mono.defer(() -> {
             Cached hit = cache.get(key);
             if (hit != null && System.currentTimeMillis() - hit.at() < cacheTtl.toMillis()) {
                 return Mono.just(hit.rows());
             }
-            return Mono.fromCallable(() -> calcite.executeQuery(sql))
+            return inFlight.computeIfAbsent(key, k -> Mono.fromCallable(() -> {
+                        List<Map<String, Object>> rows = calcite.executeQuery(sql);
+                        cache.put(k, new Cached(System.currentTimeMillis(), rows));
+                        return rows;
+                    })
                     .subscribeOn(scheduler)
-                    .timeout(timeout)
-                    .doOnNext(rows -> cache.put(key, new Cached(System.currentTimeMillis(), rows)));
+                    .doFinally(signal -> inFlight.remove(k))
+                    // Shared by every caller; one caller cancelling leaves the run going
+                    .cache())
+                    .timeout(timeout);
         });
     }
 

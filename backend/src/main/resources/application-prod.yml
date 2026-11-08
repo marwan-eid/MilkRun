@@ -10,4 +10,7 @@ milkrun:
   analytics:
     # The demo VM is small and shared; give queries time and serve cached results longer
     timeout: 30s
+    # A query outlives its caller's timeout so its result can be cached for the
+    # next viewer; PostgreSQL cancels it after this
+    statement-timeout: 2m
     cache-ttl: 60s

@@ -55,6 +55,14 @@ milkrun:
   archive:
     # At most one archived GPS point per van per interval (device time)
     min-interval: 2s
+  # How long rows are kept (see RetentionJob); without limits the database
+  # grows by about 0.5 GB a day and filled the demo VM's disk.
+  retention:
+    interval: 10m
+    gps-archive: 24h
+    dead-letters: 2d
+    # SLA breaches, delivery logs and routes: what the analytics cover
+    history: 7d
   eta:
     # Slack = deadline - predicted arrival (wall-clock seconds).
     # Below the critical buffer the stop is projected to miss its slot.

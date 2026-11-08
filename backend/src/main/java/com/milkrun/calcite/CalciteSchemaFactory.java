@@ -65,8 +65,9 @@ public class CalciteSchemaFactory {
             FleetView fleet,
             @Value("${spring.r2dbc.url}") String r2dbcUrl,
             @Value("${spring.r2dbc.username}") String username,
-            @Value("${spring.r2dbc.password}") String password) {
-        this(pooledDataSource(toJdbcUrl(r2dbcUrl), username, password),
+            @Value("${spring.r2dbc.password}") String password,
+            @Value("${milkrun.analytics.statement-timeout:2m}") Duration statementTimeout) {
+        this(pooledDataSource(toJdbcUrl(r2dbcUrl), username, password, statementTimeout),
                 new LiveVanTable(fleet::all), true);
     }
 
@@ -87,7 +88,8 @@ public class CalciteSchemaFactory {
                 .replace("r2dbc:postgresql", "jdbc:postgresql");
     }
 
-    private static DataSource pooledDataSource(String jdbcUrl, String username, String password) {
+    private static DataSource pooledDataSource(String jdbcUrl, String username, String password,
+            Duration statementTimeout) {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(jdbcUrl);
         config.setUsername(username);
@@ -96,6 +98,9 @@ public class CalciteSchemaFactory {
         config.setMaximumPoolSize(3);
         config.setMinimumIdle(0);
         config.setConnectionTimeout(5_000);
+        // Queries run one at a time and outlive a caller's timeout so their
+        // result is cached (see AnalyticsService); this stops a runaway one.
+        config.setConnectionInitSql("SET statement_timeout = " + statementTimeout.toMillis());
         // Don't fail at startup if the database is still coming up
         config.setInitializationFailTimeout(-1);
         return new HikariDataSource(config);
